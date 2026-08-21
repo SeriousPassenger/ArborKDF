@@ -48,6 +48,19 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
+      - name: Enable native symlinks for tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $key = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock"
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key `
+            -Name AllowDevelopmentWithoutDevLicense `
+            -PropertyType DWord -Value 1 -Force | Out-Null
+          if ((Get-ItemPropertyValue -Path $key `
+                -Name AllowDevelopmentWithoutDevLicense) -ne 1) {
+            throw "failed to enable Developer Mode for native symlink tests"
+          }
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
