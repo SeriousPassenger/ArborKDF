@@ -255,7 +255,7 @@ def main() -> int:
 
         symlink_path = root / "existing-symlink.txt"
         try:
-            symlink_path.symlink_to(sentinel_path)
+            symlink_path.symlink_to(sentinel_path.name)
         except OSError:
             # Creating symlinks normally requires extra privileges on Windows.
             pass
@@ -283,10 +283,11 @@ def main() -> int:
         dangling_target = root / "must-not-be-created.txt"
         dangling_symlink = root / "dangling-symlink.txt"
         dangling_symlink_tested = False
+        dangling_symlink_error = "the created path was not a native symlink"
         try:
-            dangling_symlink.symlink_to(dangling_target)
-        except OSError:
-            pass
+            dangling_symlink.symlink_to(dangling_target.name)
+        except OSError as error:
+            dangling_symlink_error = str(error)
         else:
             if dangling_symlink.is_symlink():
                 dangling_symlink_tested = True
@@ -310,7 +311,8 @@ def main() -> int:
             and not dangling_symlink_tested
         ):
             raise RuntimeError(
-                "native symlink support is required for this test run"
+                "native symlink support is required for this test run: "
+                + dangling_symlink_error
             )
 
         unicode_path = root / "türkçe-日本語.txt"
