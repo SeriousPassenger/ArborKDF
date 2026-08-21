@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -259,21 +260,58 @@ def main() -> int:
             # Creating symlinks normally requires extra privileges on Windows.
             pass
         else:
-            symlink_refused = run(
-                program,
-                "wordlist",
-                "export",
-                "--wordlist",
-                "embedded_bip39",
-                "--output",
-                str(symlink_path),
+            # MSYS2 defaults symlink creation to a deep copy when native
+            # Windows symlinks are unavailable. Only exercise symlink semantics
+            # when the path that was created is actually a symlink.
+            if symlink_path.is_symlink():
+                symlink_refused = run(
+                    program,
+                    "wordlist",
+                    "export",
+                    "--wordlist",
+                    "embedded_bip39",
+                    "--output",
+                    str(symlink_path),
+                )
+                if (
+                    symlink_refused.returncode == 0
+                    or not symlink_path.is_symlink()
+                    or sentinel_path.read_bytes() != sentinel
+                ):
+                    raise RuntimeError("export followed or replaced a symlink")
+
+        dangling_target = root / "must-not-be-created.txt"
+        dangling_symlink = root / "dangling-symlink.txt"
+        dangling_symlink_tested = False
+        try:
+            dangling_symlink.symlink_to(dangling_target)
+        except OSError:
+            pass
+        else:
+            if dangling_symlink.is_symlink():
+                dangling_symlink_tested = True
+                dangling_refused = run(
+                    program,
+                    "wordlist",
+                    "export",
+                    "--wordlist",
+                    "embedded_bip39",
+                    "--output",
+                    str(dangling_symlink),
+                )
+                if (
+                    dangling_refused.returncode == 0
+                    or not dangling_symlink.is_symlink()
+                    or dangling_target.exists()
+                ):
+                    raise RuntimeError("export followed a dangling symlink")
+        if (
+            os.environ.get("ARBORKDF_TEST_REQUIRE_NATIVE_SYMLINK") == "1"
+            and not dangling_symlink_tested
+        ):
+            raise RuntimeError(
+                "native symlink support is required for this test run"
             )
-            if (
-                symlink_refused.returncode == 0
-                or not symlink_path.is_symlink()
-                or sentinel_path.read_bytes() != sentinel
-            ):
-                raise RuntimeError("export followed or replaced a symlink")
 
         unicode_path = root / "türkçe-日本語.txt"
         check_export(

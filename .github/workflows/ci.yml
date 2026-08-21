@@ -60,4 +60,7 @@ jobs:
             mingw-w64-ucrt-x86_64-argon2
             mingw-w64-ucrt-x86_64-zlib
       - name: Build and test
+        env:
+          MSYS: winsymlinks:nativestrict
+          ARBORKDF_TEST_REQUIRE_NATIVE_SYMLINK: "1"
         run: make TARGET_OS=windows check

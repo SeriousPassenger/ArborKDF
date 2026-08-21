@@ -126,7 +126,8 @@ void write_new_binary_file(const std::string& path,
                                           0U,
                                           nullptr,
                                           CREATE_NEW,
-                                          FILE_ATTRIBUTE_NORMAL,
+                                          FILE_ATTRIBUTE_NORMAL |
+                                              FILE_FLAG_OPEN_REPARSE_POINT,
                                           nullptr);
     if (raw_handle == INVALID_HANDLE_VALUE) {
         throw_windows_create_error(GetLastError());
