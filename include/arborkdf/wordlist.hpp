@@ -19,6 +19,7 @@ class WordlistError : public std::runtime_error {
 
 class Wordlist final {
   public:
+    static Wordlist from_source(const std::string& source);
     static Wordlist from_file(const std::string& path);
     static Wordlist parse(std::string_view contents,
                           std::string source_name = "<memory>");

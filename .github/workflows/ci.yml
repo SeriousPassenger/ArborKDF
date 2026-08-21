@@ -54,6 +54,7 @@ jobs:
           update: true
           install: >-
             make
+            python
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-openssl
             mingw-w64-ucrt-x86_64-argon2

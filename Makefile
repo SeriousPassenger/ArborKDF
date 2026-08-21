@@ -1,4 +1,5 @@
 CXX ?= c++
+PYTHON ?= python3
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Unknown)
 ifeq ($(OS),Windows_NT)
@@ -87,9 +88,17 @@ PROGRAM_OBJECTS := $(PROGRAM_SOURCES:%.cpp=$(BUILD_DIR)/%.o)
 TEST_OBJECTS := $(TEST_SOURCES:%.cpp=$(BUILD_DIR)/%.o)
 DEPENDENCIES := $(LIB_OBJECTS:.o=.d) $(PROGRAM_OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d)
 
-.PHONY: all clean test check static sanitize
+.PHONY: all clean test check static sanitize verify-wordlists regenerate-wordlists
 
 all: $(PROGRAM)
+
+verify-wordlists:
+	$(PYTHON) extras/gen_wordlist_header.py --check
+
+regenerate-wordlists:
+	$(PYTHON) extras/gen_wordlist_header.py
+
+$(LIB_OBJECTS) $(PROGRAM_OBJECTS) $(TEST_OBJECTS): | verify-wordlists
 
 $(PROGRAM): $(LIB_OBJECTS) $(PROGRAM_OBJECTS)
 	$(CXX) $(LDFLAGS) $(ARBORKDF_LDFLAGS) -o $@ $^ $(LDLIBS) $(ARBORKDF_LDLIBS)
@@ -105,6 +114,7 @@ test: $(TEST_PROGRAM)
 	./$(TEST_PROGRAM)
 
 check: test $(PROGRAM)
+	$(PYTHON) tests/test_wordlist_generator.py
 	./$(PROGRAM) --help >$(NULL_DEVICE)
 	./$(PROGRAM) subkey --help >$(NULL_DEVICE)
 	./$(PROGRAM) masterkey --help >$(NULL_DEVICE)
@@ -115,6 +125,26 @@ check: test $(PROGRAM)
 	./$(PROGRAM) salt generate --help >$(NULL_DEVICE)
 	./$(PROGRAM) encoding encode --help >$(NULL_DEVICE)
 	./$(PROGRAM) encoding decode --help >$(NULL_DEVICE)
+	@test "$$(./$(PROGRAM) encoding encode \
+		--input-hex 0000000000000000000000 --wordlist embedded_bip39)" = \
+		"abandon abandon abandon abandon abandon abandon abandon abandon"
+	@test "$$(./$(PROGRAM) encoding encode \
+		--input-hex 0000000000000000000000 \
+		--wordlist ./third_party/bip39/english.txt)" = \
+		"abandon abandon abandon abandon abandon abandon abandon abandon"
+	@test "$$(./$(PROGRAM) encoding decode \
+		--input-words 'abandon abandon abandon abandon abandon abandon abandon abandon' \
+		--wordlist embedded_bip39)" = "0000000000000000000000"
+	@test "$$(printf '%s\n' \
+		'abandon ability able about above absent absorb abstract absurd abuse access accident' | \
+		$(CLI_TEST_ENV) ./$(PROGRAM) subkey generate \
+		--input-encoding wordlist --input-wordlist embedded_bip39 --master-stdin \
+		--salt-hex 000102030405060708090a0b0c0d0e0f \
+		--path /testing/path --pbkdf2-iterations 1 \
+		--argon2-memory-kib 8 --argon2-iterations 1 --argon2-parallelism 1 \
+		--security-target 128 --output-bits 264 --output-encoding wordlist \
+		--output-wordlist embedded_bip39)" = \
+		"faith recycle bullet shrug tortoise faith recall hospital save mixed super voice pattern satoshi refuse coin fall romance snake kitchen prize rule shift school"
 	@test "$$(printf 'test\n' | $(CLI_TEST_ENV) ./$(PROGRAM) subkey generate \
 		--input-encoding utf8 --master-stdin \
 		--salt-hex 000102030405060708090a0b0c0d0e0f \

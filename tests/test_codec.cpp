@@ -175,6 +175,46 @@ void test_wordlist_validation() {
         "not valid UTF-8");
 }
 
+void test_embedded_bip39_wordlist() {
+    const arborkdf::Wordlist embedded =
+        arborkdf::Wordlist::from_source("embedded_bip39");
+    const arborkdf::Wordlist vendored = arborkdf::Wordlist::from_source(
+        "third_party/bip39/english.txt");
+
+    require(embedded.source_name() == "embedded_bip39",
+            "embedded BIP39 source name");
+    require(embedded.size() == 2048U, "embedded BIP39 word count");
+    require(embedded.at(0U) == "abandon", "embedded BIP39 first word");
+    require(embedded.at(2047U) == "zoo", "embedded BIP39 last word");
+    require(embedded.find_index("satoshi") ==
+                std::optional<std::size_t>(1531U),
+            "embedded BIP39 canonical middle index");
+    require(!embedded.find_index("not-a-bip39-word").has_value(),
+            "embedded BIP39 rejects an unknown word");
+
+    require(vendored.size() == embedded.size(),
+            "embedded and vendored BIP39 sizes match");
+    for (std::size_t index = 0U; index < embedded.size(); ++index) {
+        require(embedded.at(index) == vendored.at(index),
+                "embedded and vendored BIP39 order match");
+    }
+
+    const arborkdf::Bytes zero_bits(11U, UINT8_C(0));
+    const std::vector<std::string> encoded =
+        arborkdf::encode_wordlist_bits_v1(zero_bits, embedded);
+    require(encoded == std::vector<std::string>(8U, "abandon"),
+            "88 zero bits encode to eight BIP39 index-zero words");
+    require(arborkdf::decode_wordlist_bits_v1(encoded, embedded) == zero_bits,
+            "embedded BIP39 exact codec round trip");
+
+    require_throws<arborkdf::WordlistError>(
+        [] {
+            static_cast<void>(
+                arborkdf::Wordlist::from_source("embedded_unknown"));
+        },
+        "unknown embedded wordlist selector");
+}
+
 void test_wordlist_bits_codec() {
     const arborkdf::Wordlist list =
         arborkdf::Wordlist::parse("zero\none\ntwo\nthree\n", "bits");
@@ -337,6 +377,7 @@ void run_codec_tests() {
     test_base64();
     test_utf8();
     test_wordlist_validation();
+    test_embedded_bip39_wordlist();
     test_wordlist_bits_codec();
     test_compatibility_diagnostics();
     test_master_phrase_framing();

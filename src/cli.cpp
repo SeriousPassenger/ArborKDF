@@ -61,16 +61,21 @@ Required:
   --argon2-memory-kib N          No default; at least 8 * parallelism
   --argon2-iterations N          No default
   --argon2-parallelism N         No default
-  --security-target 128|256      Conservative generic quantum-search margin
+  --security-target 128|256      Keyed-output quantum-search margin only
   --output-bits N                Byte-aligned; >=256 or >=512 for target
   --output-encoding hex|base64|wordlist
 
 Conditional:
-  --input-wordlist FILE          Required for wordlist master input
-  --output-wordlist FILE         Required for wordlist output
+  --input-wordlist SOURCE        File path or embedded_bip39; required for
+                                 wordlist master input
+  --output-wordlist SOURCE       File path or embedded_bip39; required for
+                                 wordlist output
   --master-stdin                 Read one master line from stdin instead of a
                                  hidden, twice-confirmed interactive prompt;
                                  stdin mode is deliberately single-read
+
+embedded_bip39 is the canonical English vocabulary only. ArborKDF phrases have
+no BIP-39 checksum and do not use BIP-39's mnemonic-to-seed procedure.
 
 The public salt and path are length-framed. The 128 target uses fixed-output
 KMAC256; the 256 target uses SP 800-108 counter mode with HMAC-SHA3-512.
@@ -88,8 +93,11 @@ For hex or base64:
   --bits N                       Byte-aligned, 8..4096
 
 For wordlist:
-  --wordlist FILE                Any validated list with at least 2 entries
+  --wordlist SOURCE              File path or embedded_bip39
   --words N                      1..4096 independently sampled words
+
+embedded_bip39 is the canonical English vocabulary only. Generated phrases have
+no BIP-39 checksum and are not BIP-39 wallet mnemonics.
 
 OS randomness is mandatory. Move the mouse to collect supplemental input; the
 256-bit progress bar is a diagnostic minimum, can move backward, can exceed 100%,
@@ -105,7 +113,8 @@ Required:
   --output-encoding hex|base64|wordlist
 
 Conditional:
-  --output-wordlist FILE         Required for wordlist output
+  --output-wordlist SOURCE       File path or embedded_bip39; required for
+                                 wordlist output
 
 The salt is public. OS randomness is mandatory; mouse input is supplemental and
 reported with the same non-averaged diagnostic display as master-key generation.
@@ -116,21 +125,24 @@ const char* const kEncodingEncodeHelp = R"HELP(Usage: arborkdf encoding encode [
 Required:
   --input-hex HEX                Strict hex: no 0x, whitespace, or odd nibble;
                                  maximum 1024 characters (4096 bits)
-  --wordlist FILE                Output list for wordlist-bits-v1
+  --wordlist SOURCE              File path or embedded_bip39
 
 The list must contain 2^k unique entries and the input bit count must be divisible
 by k. No bit is padded, discarded, or truncated. Failure reports the reason and
 closest lower/upper compatible wordlist sizes when they exist.
+embedded_bip39 selects only the vocabulary, not BIP-39 mnemonic semantics.
 )HELP";
 
 const char* const kEncodingDecodeHelp = R"HELP(Usage: arborkdf encoding decode [options]
 
 Required:
   --input-words "WORDS ..."      Bare wordlist-bits-v1 phrase
-  --wordlist FILE                Exact list and ordering used for encoding
+  --wordlist SOURCE              File path or embedded_bip39; exact list and
+                                 ordering used for encoding
 
 Output is canonical lowercase hex. Unknown words and non-byte-aligned phrases are
 rejected; there is no fallback interpretation.
+embedded_bip39 selects only the vocabulary, not BIP-39 mnemonic semantics.
 )HELP";
 
 class Options final {
@@ -393,12 +405,12 @@ public:
             return;
         }
         if (encoding == "wordlist") {
-            const std::optional<std::string> path =
+            const std::optional<std::string> source =
                 options.optional("--input-wordlist");
-            if (!path.has_value()) {
+            if (!source.has_value()) {
                 throw Error("--input-wordlist is required for wordlist input");
             }
-            wordlist_.emplace(Wordlist::from_file(*path));
+            wordlist_.emplace(Wordlist::from_source(*source));
             kind_ = Kind::wordlist;
             maximum_bytes_ = kMaximumMasterPhraseBytes;
             return;
@@ -468,29 +480,29 @@ private:
 class OutputEncoder final {
 public:
     OutputEncoder(const std::string& encoding,
-                  const std::optional<std::string>& wordlist_path,
+                  const std::optional<std::string>& wordlist_source,
                   const std::size_t output_bytes) {
         if (output_bytes > std::numeric_limits<std::size_t>::max() / 8U) {
             throw Error("output length cannot be expressed in bits");
         }
         if (encoding == "hex") {
-            reject_wordlist_path(wordlist_path);
+            reject_wordlist_source(wordlist_source);
             kind_ = Kind::hex;
             return;
         }
         if (encoding == "base64") {
-            reject_wordlist_path(wordlist_path);
+            reject_wordlist_source(wordlist_source);
             kind_ = Kind::base64;
             return;
         }
         if (encoding != "wordlist") {
             throw Error("--output-encoding must be exactly hex, base64, or wordlist");
         }
-        if (!wordlist_path.has_value()) {
+        if (!wordlist_source.has_value()) {
             throw Error("--output-wordlist is required for wordlist output");
         }
         kind_ = Kind::wordlist;
-        wordlist_.emplace(Wordlist::from_file(*wordlist_path));
+        wordlist_.emplace(Wordlist::from_source(*wordlist_source));
         const WordlistBitsCompatibility diagnostic =
             analyze_wordlist_bits_compatibility(output_bytes * 8U, wordlist_->size());
         if (!diagnostic.compatible) {
@@ -516,9 +528,9 @@ public:
 private:
     enum class Kind { hex, base64, wordlist };
 
-    static void reject_wordlist_path(
-        const std::optional<std::string>& wordlist_path) {
-        if (wordlist_path.has_value()) {
+    static void reject_wordlist_source(
+        const std::optional<std::string>& wordlist_source) {
+        if (wordlist_source.has_value()) {
             throw Error("--output-wordlist is only valid with wordlist output");
         }
     }
@@ -681,7 +693,7 @@ int command_masterkey_generate(const std::vector<std::string>& arguments) {
         if (options.optional("--bits").has_value()) {
             throw Error("--bits is not used for a generated wordlist master; use --words");
         }
-        const Wordlist wordlist = Wordlist::from_file(options.required("--wordlist"));
+        const Wordlist wordlist = Wordlist::from_source(options.required("--wordlist"));
         const std::size_t words =
             parse_unsigned<std::size_t>(options.required("--words"), "--words");
         if (words == 0U || words > kMaximumGeneratedWords) {
@@ -770,7 +782,7 @@ int command_encoding_encode(const std::vector<std::string>& arguments) {
     options.reject_unknown({"--input-hex", "--wordlist"}, {});
     Bytes input = decode_hex(options.required("--input-hex"));
     const SensitiveBytesGuard input_guard(input);
-    const Wordlist wordlist = Wordlist::from_file(options.required("--wordlist"));
+    const Wordlist wordlist = Wordlist::from_source(options.required("--wordlist"));
     std::string output = join_words(encode_wordlist_bits_v1(input, wordlist));
     const SensitiveStringGuard output_guard(output);
     write_stdout(output, true);
@@ -784,7 +796,7 @@ int command_encoding_decode(const std::vector<std::string>& arguments) {
         return 0;
     }
     options.reject_unknown({"--input-words", "--wordlist"}, {});
-    const Wordlist wordlist = Wordlist::from_file(options.required("--wordlist"));
+    const Wordlist wordlist = Wordlist::from_source(options.required("--wordlist"));
     const std::vector<std::string> words = split_words(options.required("--input-words"));
     Bytes decoded = decode_wordlist_bits_v1(words, wordlist);
     const SensitiveBytesGuard decoded_guard(decoded);

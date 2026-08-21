@@ -16,12 +16,13 @@ Suggested GitHub description:
 ## Design highlights
 
 - CLI only; no colors, network access, configuration files, or hidden defaults.
-- Master input type is mandatory: validated UTF-8 or a custom wordlist phrase.
+- Master input type is mandatory: validated UTF-8 or an explicitly selected
+  wordlist phrase.
 - Argon2id memory, iterations, and parallelism are all mandatory.
 - PBKDF2 iteration count is mandatory.
 - The public salt and virtual path are length-framed and bound into every subkey.
 - Output encoding is mandatory: lowercase hex, canonical RFC 4648 Base64, or an
-  explicit custom wordlist.
+  explicitly selected wordlist.
 - Wordlist output is exact: it fails instead of padding, truncating, or discarding
   even one bit.
 - OS CSPRNG output is the primary random source. Mouse events are supplemental and
@@ -38,6 +39,7 @@ Requirements:
 
 - C++17 compiler (GCC or Clang)
 - GNU Make
+- Python 3 (build-time verification of generated embedded wordlists only)
 - OpenSSL 3.x development files
 - libargon2 development files
 - zlib development files
@@ -71,6 +73,18 @@ arborkdf salt generate --help
 arborkdf encoding encode --help
 arborkdf encoding decode --help
 ```
+
+Every wordlist option accepts either a custom file path or the reserved selector
+`embedded_bip39`. For example:
+
+```text
+arborkdf encoding encode --input-hex 0000000000000000000000 --wordlist embedded_bip39
+```
+
+The embedded selector is never a default. A custom file literally named
+`embedded_bip39` remains addressable as `./embedded_bip39` or by an absolute path.
+The selector uses only the canonical BIP-39 English vocabulary; ArborKDF does not
+claim BIP-39 checksum or seed-derivation compatibility.
 
 Use each command's help because cryptographic inputs and tunable costs are
 intentionally explicit. Interactive master entry is hidden and confirmed twice;

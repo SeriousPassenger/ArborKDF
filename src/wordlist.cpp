@@ -1,5 +1,7 @@
 #include "arborkdf/wordlist.hpp"
 
+#include "arborkdf/generated/bip39_english_wordlist.hpp"
+
 #include "arborkdf/codec.hpp"
 
 #include <algorithm>
@@ -385,6 +387,24 @@ Wordlist::Wordlist(std::vector<std::string> words, std::string source_name)
     for (std::size_t index = 0U; index < words_.size(); ++index) {
         indices_.emplace(words_[index], index);
     }
+}
+
+Wordlist Wordlist::from_source(const std::string& source) {
+    const std::string_view source_view(source);
+    if (source_view == generated::kBip39EnglishSelector) {
+        std::vector<std::string> words;
+        words.reserve(generated::kBip39EnglishWords.size());
+        for (const std::string_view word : generated::kBip39EnglishWords) {
+            words.emplace_back(word);
+        }
+        return Wordlist(std::move(words), source);
+    }
+    constexpr std::string_view kEmbeddedPrefix{"embedded_"};
+    if (source_view.substr(0U, kEmbeddedPrefix.size()) == kEmbeddedPrefix) {
+        throw WordlistError("unknown embedded wordlist selector: " + source +
+                            "; available selector: embedded_bip39");
+    }
+    return from_file(source);
 }
 
 Wordlist Wordlist::from_file(const std::string& path) {

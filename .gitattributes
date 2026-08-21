@@ -1,0 +1,4 @@
+third_party/bip39/english.txt text eol=lf
+include/arborkdf/generated/*.hpp text eol=lf
+extras/*.py text eol=lf
+tests/*.py text eol=lf
