@@ -284,28 +284,30 @@ def main() -> int:
         dangling_symlink = root / "dangling-symlink.txt"
         dangling_symlink_tested = False
         dangling_symlink_error = "the created path was not a native symlink"
+        dangling_target.write_bytes(b"temporary symlink target\n")
         try:
             dangling_symlink.symlink_to(dangling_target.name)
         except OSError as error:
             dangling_symlink_error = str(error)
-        else:
-            if dangling_symlink.is_symlink():
-                dangling_symlink_tested = True
-                dangling_refused = run(
-                    program,
-                    "wordlist",
-                    "export",
-                    "--wordlist",
-                    "embedded_bip39",
-                    "--output",
-                    str(dangling_symlink),
-                )
-                if (
-                    dangling_refused.returncode == 0
-                    or not dangling_symlink.is_symlink()
-                    or dangling_target.exists()
-                ):
-                    raise RuntimeError("export followed a dangling symlink")
+        finally:
+            dangling_target.unlink(missing_ok=True)
+        if dangling_symlink.is_symlink():
+            dangling_symlink_tested = True
+            dangling_refused = run(
+                program,
+                "wordlist",
+                "export",
+                "--wordlist",
+                "embedded_bip39",
+                "--output",
+                str(dangling_symlink),
+            )
+            if (
+                dangling_refused.returncode == 0
+                or not dangling_symlink.is_symlink()
+                or dangling_target.exists()
+            ):
+                raise RuntimeError("export followed a dangling symlink")
         if (
             os.environ.get("ARBORKDF_TEST_REQUIRE_NATIVE_SYMLINK") == "1"
             and not dangling_symlink_tested
