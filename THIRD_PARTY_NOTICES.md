@@ -24,6 +24,20 @@ Project-pinned SHA-512 of the raw source including its final LF:
 `416c71ba30018ea292bb36cdc23c9329673485a8d8933266a9d9a7cc72153b8baed3d430f52eab4f5d3addf6583611b3777a50454599f1e42716f5f879621123`.
 The corresponding license text is retained in `third_party/bip39/LICENSE`.
 
+`third_party/arborkdf-wordlists/en_tr_jp_131072.txt` and its generated C++
+header form the composite ArborKDF English/Turkish/Japanese 131072 v1
+vocabulary. They contain modified data derived from Debian SCOWL American and
+British dictionaries, tdd-ai/hunspell-tr, and the NAIST Japanese Dictionary;
+the Japanese reading conversion implements pinned jaconv behavior. Full source
+identities, hashes, modification details, and applicable notices are in
+`third_party/arborkdf-wordlists/NOTICE.md`. Verbatim license/notice texts are
+retained under `third_party/scowl`, `third_party/hunspell-tr`,
+`third_party/mecab-naist-jdic`, and `third_party/jaconv`. The Turkish-derived
+data makes the complete composite canonical text and generated embedding
+MPL-2.0-covered files; the English and Japanese source notices also remain
+applicable. ArborKDF's original program code remains separately MIT-licensed.
+
 ArborKDF links to, but does not vendor, OpenSSL, libargon2, and zlib. Their
 respective licenses apply to built distributions, especially statically linked
-artifacts.
+artifacts. Do not distribute a standalone binary without the required notices,
+license materials, and any applicable source offer or source availability.

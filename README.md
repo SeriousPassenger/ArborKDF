@@ -39,7 +39,7 @@ Requirements:
 
 - C++17 compiler (GCC or Clang)
 - GNU Make
-- Python 3 (build-time verification of generated embedded wordlists only)
+- Python 3.10 or newer (build-time verification of generated embedded wordlists only)
 - OpenSSL 3.x development files
 - libargon2 development files
 - zlib development files
@@ -63,6 +63,11 @@ for a static rebuild. The project does not download or silently substitute a
 dependency. Cross-compiling with GNU Make uses an explicit `TARGET_OS`, for example
 `TARGET_OS=windows`; native MSVC/NMake is not currently supported.
 
+Do not distribute a bare static executable. A binary distribution must include
+the applicable wordlist and dependency notices/license materials, and must meet
+the relevant source-availability obligations described in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
 ## Commands
 
 ```text
@@ -72,19 +77,37 @@ arborkdf masterkey generate --help
 arborkdf salt generate --help
 arborkdf encoding encode --help
 arborkdf encoding decode --help
+arborkdf wordlist list
+arborkdf wordlist export --help
 ```
 
-Every wordlist option accepts either a custom file path or the reserved selector
-`embedded_bip39`. For example:
+Every wordlist option accepts either a custom file path or an explicitly named
+embedded selector. There is no default. Discover and export the exact compiled
+lists with:
+
+```text
+arborkdf wordlist list
+arborkdf wordlist export --wordlist embedded_en_tr_jp_131072 --output en_tr_jp_131072.txt
+```
+
+Export creates a new canonical UTF-8/LF file and refuses to overwrite an existing
+file, directory, or symlink. The available selectors are `embedded_bip39` and the
+immutable `embedded_en_tr_jp_131072`. For example:
 
 ```text
 arborkdf encoding encode --input-hex 0000000000000000000000 --wordlist embedded_bip39
 ```
 
-The embedded selector is never a default. A custom file literally named
-`embedded_bip39` remains addressable as `./embedded_bip39` or by an absolute path.
-The selector uses only the canonical BIP-39 English vocabulary; ArborKDF does not
-claim BIP-39 checksum or seed-derivation compatibility.
+The BIP-39 selector uses only the canonical English vocabulary; ArborKDF does not
+claim BIP-39 checksum or seed-derivation compatibility. The 131,072-entry selector
+contains fixed near-equal English, Turkish, and ASCII-romanized Japanese quotas.
+It supplies exactly 17 index bits per uniformly sampled word, but its larger and
+less curated vocabulary is not automatically safer or easier for people to
+memorize. See [Wordlist formats](docs/WORDLISTS.md) for its exact hash,
+reproducibility procedure, byte-alignment rules, and usability caveats.
+
+A custom file whose name matches a selector remains addressable by making it an
+unambiguous path, such as `./embedded_bip39`, or by using an absolute path.
 
 Use each command's help because cryptographic inputs and tunable costs are
 intentionally explicit. Interactive master entry is hidden and confirmed twice;
@@ -102,6 +125,7 @@ provides one so redirected secret output stays clean.
 - [Security policy](SECURITY.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 
-ArborKDF is available under the [MIT License](LICENSE). Linked and redistributed
-third-party components retain their own licenses; see
-[Third-party notices](THIRD_PARTY_NOTICES.md).
+ArborKDF's original program code is available under the [MIT License](LICENSE).
+The complete composite embedded wordlist source and generated embedding are
+available under MPL-2.0 and retain all applicable source notices. Linked
+components retain their own licenses. See [Third-party notices](THIRD_PARTY_NOTICES.md).

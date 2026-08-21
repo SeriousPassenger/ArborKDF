@@ -1,6 +1,7 @@
 #include "arborkdf/wordlist.hpp"
 
 #include "arborkdf/generated/bip39_english_wordlist.hpp"
+#include "arborkdf/generated/en_tr_jp_131072_wordlist.hpp"
 
 #include "arborkdf/codec.hpp"
 
@@ -25,6 +26,115 @@ constexpr std::size_t kMaximumWordlistBytes = 64U * 1024U * 1024U;
 constexpr std::size_t kMaximumWordCount = 1024U * 1024U;
 constexpr std::size_t kMaximumWordBytes = 1024U;
 constexpr std::size_t kMaximumSupportedBitsPerWord = 20U;
+constexpr std::string_view kBip39EnglishSha512 =
+    "416c71ba30018ea292bb36cdc23c9329673485a8d8933266a9d9a7cc72153b8b"
+    "aed3d430f52eab4f5d3addf6583611b3777a50454599f1e42716f5f879621123";
+constexpr std::size_t kBip39EnglishCanonicalBytes = 13116U;
+
+struct EmbeddedWordlistRecord final {
+    EmbeddedWordlistMetadata metadata;
+    const std::string_view* words = nullptr;
+    std::size_t words_size = 0U;
+    const std::string_view* canonical_chunks = nullptr;
+    std::size_t canonical_chunks_size = 0U;
+};
+
+const std::vector<EmbeddedWordlistRecord>& embedded_wordlist_records() {
+    static const std::vector<EmbeddedWordlistRecord> records{
+        EmbeddedWordlistRecord{
+            EmbeddedWordlistMetadata{
+                generated::kBip39EnglishSelector,
+                "BIP-39 English vocabulary",
+                "bip39-english-vocabulary",
+                "en",
+                generated::kBip39EnglishWords.size(),
+                11U,
+                88U,
+                kBip39EnglishCanonicalBytes,
+                kBip39EnglishSha512,
+                {EmbeddedWordlistCount{"en", 2048U}},
+                {}},
+            generated::kBip39EnglishWords.data(),
+            generated::kBip39EnglishWords.size(),
+            nullptr,
+            0U},
+        EmbeddedWordlistRecord{
+            EmbeddedWordlistMetadata{
+                generated::kEnTrJp131072Selector,
+                "ArborKDF English/Turkish/Japanese 131072 v1",
+                "ArborKDF-en-tr-jp-131072-v1",
+                "en,tr,ja",
+                generated::kEnTrJp131072WordCount,
+                17U,
+                136U,
+                generated::kEnTrJp131072CanonicalBytes,
+                generated::kEnTrJp131072Sha512,
+                {EmbeddedWordlistCount{
+                     "en", generated::kEnTrJp131072EnglishCount},
+                 EmbeddedWordlistCount{
+                     "tr", generated::kEnTrJp131072TurkishCount},
+                 EmbeddedWordlistCount{
+                     "ja", generated::kEnTrJp131072JapaneseCount}},
+                {EmbeddedWordlistCount{
+                     "en&tr", generated::kEnTrJp131072EnglishTurkishOverlap},
+                 EmbeddedWordlistCount{
+                     "en&ja", generated::kEnTrJp131072EnglishJapaneseOverlap},
+                 EmbeddedWordlistCount{
+                     "tr&ja", generated::kEnTrJp131072TurkishJapaneseOverlap},
+                 EmbeddedWordlistCount{
+                     "en&tr&ja",
+                     generated::kEnTrJp131072EnglishTurkishJapaneseOverlap}}},
+            nullptr,
+            0U,
+            generated::kEnTrJp131072Chunks.data(),
+            generated::kEnTrJp131072Chunks.size()}};
+    return records;
+}
+
+const EmbeddedWordlistRecord* find_embedded_wordlist_record(
+    const std::string_view selector) {
+    const auto& records = embedded_wordlist_records();
+    const auto found = std::find_if(
+        records.begin(), records.end(),
+        [selector](const EmbeddedWordlistRecord& record) {
+            return record.metadata.selector == selector;
+        });
+    return found == records.end() ? nullptr : &*found;
+}
+
+std::string available_embedded_selector_text() {
+    std::string result;
+    const auto& records = embedded_wordlist_records();
+    for (std::size_t index = 0U; index < records.size(); ++index) {
+        if (index != 0U) {
+            result.append(", ");
+        }
+        result.append(records[index].metadata.selector);
+    }
+    return result;
+}
+
+std::string canonical_text_from_record(
+    const EmbeddedWordlistRecord& record) {
+    std::string result;
+    result.reserve(record.metadata.canonical_text_bytes);
+    if (record.canonical_chunks != nullptr) {
+        for (std::size_t index = 0U;
+             index < record.canonical_chunks_size; ++index) {
+            result.append(record.canonical_chunks[index]);
+        }
+    } else {
+        for (std::size_t index = 0U; index < record.words_size; ++index) {
+            result.append(record.words[index]);
+            result.push_back('\n');
+        }
+    }
+    if (result.size() != record.metadata.canonical_text_bytes) {
+        throw WordlistError(
+            "internal embedded wordlist canonical byte count mismatch");
+    }
+    return result;
+}
 
 std::string location(const std::string& source_name,
                      const std::size_t line_number) {
@@ -391,18 +501,26 @@ Wordlist::Wordlist(std::vector<std::string> words, std::string source_name)
 
 Wordlist Wordlist::from_source(const std::string& source) {
     const std::string_view source_view(source);
-    if (source_view == generated::kBip39EnglishSelector) {
+    const EmbeddedWordlistRecord* const embedded =
+        find_embedded_wordlist_record(source_view);
+    if (embedded != nullptr) {
+        if (embedded->canonical_chunks != nullptr) {
+            const std::string canonical =
+                canonical_text_from_record(*embedded);
+            return parse(canonical, source);
+        }
         std::vector<std::string> words;
-        words.reserve(generated::kBip39EnglishWords.size());
-        for (const std::string_view word : generated::kBip39EnglishWords) {
-            words.emplace_back(word);
+        words.reserve(embedded->words_size);
+        for (std::size_t index = 0U; index < embedded->words_size; ++index) {
+            words.emplace_back(embedded->words[index]);
         }
         return Wordlist(std::move(words), source);
     }
     constexpr std::string_view kEmbeddedPrefix{"embedded_"};
     if (source_view.substr(0U, kEmbeddedPrefix.size()) == kEmbeddedPrefix) {
         throw WordlistError("unknown embedded wordlist selector: " + source +
-                            "; available selector: embedded_bip39");
+                            "; available selectors: " +
+                            available_embedded_selector_text());
     }
     return from_file(source);
 }
@@ -525,6 +643,32 @@ std::optional<std::size_t> Wordlist::find_index(
 
 const std::string& Wordlist::source_name() const noexcept {
     return source_name_;
+}
+
+const std::vector<EmbeddedWordlistMetadata>& embedded_wordlist_catalog() {
+    static const std::vector<EmbeddedWordlistMetadata> catalog = [] {
+        std::vector<EmbeddedWordlistMetadata> result;
+        const auto& records = embedded_wordlist_records();
+        result.reserve(records.size());
+        for (const EmbeddedWordlistRecord& record : records) {
+            result.push_back(record.metadata);
+        }
+        return result;
+    }();
+    return catalog;
+}
+
+std::string canonical_embedded_wordlist_text(
+    const std::string_view selector) {
+    const EmbeddedWordlistRecord* const record =
+        find_embedded_wordlist_record(selector);
+    if (record == nullptr) {
+        throw WordlistError(
+            "unknown embedded wordlist selector: " + std::string(selector) +
+            "; available selectors: " + available_embedded_selector_text());
+    }
+
+    return canonical_text_from_record(*record);
 }
 
 WordlistCodecError::WordlistCodecError(

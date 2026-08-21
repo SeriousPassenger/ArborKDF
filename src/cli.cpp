@@ -5,6 +5,7 @@
 #include "arborkdf/crypto.hpp"
 #include "arborkdf/entropy.hpp"
 #include "arborkdf/error.hpp"
+#include "arborkdf/file.hpp"
 #include "arborkdf/platform.hpp"
 #include "arborkdf/wordlist.hpp"
 
@@ -20,6 +21,7 @@
 #include <map>
 #include <new>
 #include <optional>
+#include <sstream>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -46,6 +48,8 @@ Usage:
   arborkdf salt generate [options]
   arborkdf encoding encode [options]
   arborkdf encoding decode [options]
+  arborkdf wordlist list
+  arborkdf wordlist export [options]
 
 Run a command with --help for every required option and security note. ArborKDF
 has no GUI, no network behavior, no color output, and no cryptographic defaults.
@@ -66,16 +70,17 @@ Required:
   --output-encoding hex|base64|wordlist
 
 Conditional:
-  --input-wordlist SOURCE        File path or embedded_bip39; required for
+  --input-wordlist SOURCE        Custom file or embedded selector; required for
                                  wordlist master input
-  --output-wordlist SOURCE       File path or embedded_bip39; required for
+  --output-wordlist SOURCE       Custom file or embedded selector; required for
                                  wordlist output
   --master-stdin                 Read one master line from stdin instead of a
                                  hidden, twice-confirmed interactive prompt;
                                  stdin mode is deliberately single-read
 
-embedded_bip39 is the canonical English vocabulary only. ArborKDF phrases have
-no BIP-39 checksum and do not use BIP-39's mnemonic-to-seed procedure.
+Run `arborkdf wordlist list` for embedded selectors. embedded_bip39 is the
+canonical English vocabulary only. ArborKDF phrases have no BIP-39 checksum and
+do not use BIP-39's mnemonic-to-seed procedure.
 
 The public salt and path are length-framed. The 128 target uses fixed-output
 KMAC256; the 256 target uses SP 800-108 counter mode with HMAC-SHA3-512.
@@ -93,11 +98,12 @@ For hex or base64:
   --bits N                       Byte-aligned, 8..4096
 
 For wordlist:
-  --wordlist SOURCE              File path or embedded_bip39
+  --wordlist SOURCE              Custom file or embedded selector
   --words N                      1..4096 independently sampled words
 
-embedded_bip39 is the canonical English vocabulary only. Generated phrases have
-no BIP-39 checksum and are not BIP-39 wallet mnemonics.
+Run `arborkdf wordlist list` for embedded selectors. embedded_bip39 is the
+canonical English vocabulary only. Generated phrases have no BIP-39 checksum
+and are not BIP-39 wallet mnemonics.
 
 OS randomness is mandatory. Move the mouse to collect supplemental input; the
 256-bit progress bar is a diagnostic minimum, can move backward, can exceed 100%,
@@ -113,7 +119,7 @@ Required:
   --output-encoding hex|base64|wordlist
 
 Conditional:
-  --output-wordlist SOURCE       File path or embedded_bip39; required for
+  --output-wordlist SOURCE       Custom file or embedded selector; required for
                                  wordlist output
 
 The salt is public. OS randomness is mandatory; mouse input is supplemental and
@@ -125,24 +131,55 @@ const char* const kEncodingEncodeHelp = R"HELP(Usage: arborkdf encoding encode [
 Required:
   --input-hex HEX                Strict hex: no 0x, whitespace, or odd nibble;
                                  maximum 1024 characters (4096 bits)
-  --wordlist SOURCE              File path or embedded_bip39
+  --wordlist SOURCE              Custom file or embedded selector
 
 The list must contain 2^k unique entries and the input bit count must be divisible
 by k. No bit is padded, discarded, or truncated. Failure reports the reason and
 closest lower/upper compatible wordlist sizes when they exist.
-embedded_bip39 selects only the vocabulary, not BIP-39 mnemonic semantics.
+Run `arborkdf wordlist list` for embedded selectors. embedded_bip39 selects only
+the vocabulary, not BIP-39 mnemonic semantics.
 )HELP";
 
 const char* const kEncodingDecodeHelp = R"HELP(Usage: arborkdf encoding decode [options]
 
 Required:
   --input-words "WORDS ..."      Bare wordlist-bits-v1 phrase
-  --wordlist SOURCE              File path or embedded_bip39; exact list and
-                                 ordering used for encoding
+  --wordlist SOURCE              Custom file or embedded selector; exact list
+                                 and ordering used for encoding
 
 Output is canonical lowercase hex. Unknown words and non-byte-aligned phrases are
 rejected; there is no fallback interpretation.
 embedded_bip39 selects only the vocabulary, not BIP-39 mnemonic semantics.
+)HELP";
+
+const char* const kWordlistGroupHelp = R"HELP(ArborKDF embedded wordlist tools
+
+Usage:
+  arborkdf wordlist list
+  arborkdf wordlist export --wordlist SELECTOR --output FILE
+
+`list` reports every compiled selector and its recovery metadata. `export`
+writes the selector's canonical UTF-8 text to a new file without overwriting any
+existing filesystem object. Custom wordlist files remain accepted by commands
+that consume wordlists, but are not copied by `wordlist export`.
+)HELP";
+
+const char* const kWordlistListHelp = R"HELP(Usage: arborkdf wordlist list
+
+Lists every embedded selector with its entry count, bit width, byte-aligned
+encoding block, language membership and overlap counts, canonical byte count,
+and SHA-512 over the exported bytes including the final LF.
+)HELP";
+
+const char* const kWordlistExportHelp = R"HELP(Usage: arborkdf wordlist export [options]
+
+Required:
+  --wordlist SELECTOR            Embedded selector from `wordlist list`
+  --output FILE                  New output path; must not already exist
+
+The output is the exact canonical UTF-8 wordlist with LF line endings and a
+final LF. Existing files, directories, and symlinks are never overwritten.
+Custom file paths and standard-output export are deliberately not supported.
 )HELP";
 
 class Options final {
@@ -809,6 +846,90 @@ int command_encoding_decode(const std::vector<std::string>& arguments) {
     return 0;
 }
 
+void append_named_counts(
+    std::ostringstream& output,
+    const std::vector<EmbeddedWordlistCount>& counts) {
+    if (counts.empty()) {
+        output << "none";
+        return;
+    }
+    for (std::size_t index = 0U; index < counts.size(); ++index) {
+        if (index != 0U) {
+            output << ',';
+        }
+        output << counts[index].label << '=' << counts[index].count;
+    }
+}
+
+int command_wordlist_list(const std::vector<std::string>& arguments) {
+    const Options options(arguments);
+    if (options.help()) {
+        write_stdout(kWordlistListHelp, false);
+        return 0;
+    }
+    options.reject_unknown({}, {});
+
+    std::ostringstream output;
+    const auto& catalog = embedded_wordlist_catalog();
+    for (std::size_t index = 0U; index < catalog.size(); ++index) {
+        const EmbeddedWordlistMetadata& metadata = catalog[index];
+        if (index != 0U) {
+            output << '\n';
+        }
+        output << "selector: " << metadata.selector << '\n'
+               << "name: " << metadata.display_name << '\n'
+               << "standard-id: " << metadata.standard_id << '\n'
+               << "entries: " << metadata.word_count << '\n'
+               << "bits-per-word: " << metadata.bits_per_word << '\n'
+               << "byte-aligned-block-bits: "
+               << metadata.byte_aligned_block_bits << '\n'
+               << "languages: " << metadata.languages << '\n'
+               << "language-memberships: ";
+        append_named_counts(output, metadata.language_memberships);
+        output << '\n' << "exact-overlaps: ";
+        append_named_counts(output, metadata.exact_overlaps);
+        output << '\n'
+               << "canonical-bytes: " << metadata.canonical_text_bytes << '\n'
+               << "sha512: " << metadata.sha512_hex << '\n';
+    }
+    write_stdout(output.str(), false);
+    return 0;
+}
+
+int command_wordlist_export(const std::vector<std::string>& arguments) {
+    const Options options(arguments);
+    if (options.help()) {
+        write_stdout(kWordlistExportHelp, false);
+        return 0;
+    }
+    options.reject_unknown({"--wordlist", "--output"}, {});
+
+    const std::string selector = options.required("--wordlist");
+    const std::string output_path = options.required("--output");
+    if (output_path == "-") {
+        throw Error("--output must name a new file; standard output is not supported");
+    }
+    const std::string canonical =
+        canonical_embedded_wordlist_text(selector);
+    write_new_binary_file(output_path, canonical);
+
+    const auto& catalog = embedded_wordlist_catalog();
+    const auto found = std::find_if(
+        catalog.begin(), catalog.end(),
+        [&selector](const EmbeddedWordlistMetadata& metadata) {
+            return metadata.selector == selector;
+        });
+    if (found == catalog.end()) {
+        throw Error("internal embedded wordlist catalog mismatch");
+    }
+    std::ostringstream confirmation;
+    confirmation << "exported " << found->selector << " (" << found->word_count
+                 << " entries, " << found->canonical_text_bytes
+                 << " bytes, SHA-512 " << found->sha512_hex << ')';
+    write_stdout(confirmation.str(), true);
+    return 0;
+}
+
 [[nodiscard]] std::vector<std::string> tail_arguments(const int argc,
                                                        char* argv[],
                                                        const int offset) {
@@ -856,6 +977,10 @@ int run_cli(const int argc, char* argv[]) {
                 write_stdout(help, false);
                 return 0;
             }
+            if (first == "wordlist") {
+                write_stdout(kWordlistGroupHelp, false);
+                return 0;
+            }
         }
         if (first == "subkey" && argc >= 3 && std::string(argv[2]) == "generate") {
             return command_subkey_generate(tail_arguments(argc, argv, 3));
@@ -873,6 +998,15 @@ int run_cli(const int argc, char* argv[]) {
             }
             if (operation == "decode") {
                 return command_encoding_decode(tail_arguments(argc, argv, 3));
+            }
+        }
+        if (first == "wordlist" && argc >= 3) {
+            const std::string operation(argv[2]);
+            if (operation == "list") {
+                return command_wordlist_list(tail_arguments(argc, argv, 3));
+            }
+            if (operation == "export") {
+                return command_wordlist_export(tail_arguments(argc, argv, 3));
             }
         }
         throw Error("unknown or incomplete command; run arborkdf --help");

@@ -14,7 +14,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RELATIVE_FILES = (
     Path("extras/gen_wordlist_header.py"),
     Path("third_party/bip39/english.txt"),
+    Path("third_party/arborkdf-wordlists/en_tr_jp_131072.txt"),
+    Path("third_party/arborkdf-wordlists/en_tr_jp_131072.manifest.json"),
     Path("include/arborkdf/generated/bip39_english_wordlist.hpp"),
+    Path("include/arborkdf/generated/en_tr_jp_131072_wordlist.hpp"),
 )
 
 
@@ -45,22 +48,45 @@ def require_failure(result: subprocess.CompletedProcess[str], text: str) -> None
 
 
 def main() -> int:
-    with tempfile.TemporaryDirectory(prefix="arborkdf-wordlist-source-") as name:
-        root = Path(name)
-        prepare_tree(root)
-        result = run_check(root)
-        if result.returncode != 0:
-            raise RuntimeError(f"clean generator check failed: {result.stderr}")
-        source = root / "third_party/bip39/english.txt"
-        source.write_bytes(source.read_bytes()[:-1])
-        require_failure(run_check(root), "SHA-512 mismatch")
-
-    with tempfile.TemporaryDirectory(prefix="arborkdf-wordlist-header-") as name:
-        root = Path(name)
-        prepare_tree(root)
-        header = root / "include/arborkdf/generated/bip39_english_wordlist.hpp"
-        header.write_bytes(header.read_bytes()[:-1])
-        require_failure(run_check(root), "generated header is stale")
+    mutations = (
+        (Path("third_party/bip39/english.txt"), "SHA-512 mismatch"),
+        (
+            Path("third_party/arborkdf-wordlists/en_tr_jp_131072.txt"),
+            "expected 1262297 bytes",
+        ),
+        (
+            Path(
+                "third_party/arborkdf-wordlists/"
+                "en_tr_jp_131072.manifest.json"
+            ),
+            "SHA-512 mismatch",
+        ),
+        (
+            Path("include/arborkdf/generated/bip39_english_wordlist.hpp"),
+            "generated header is stale",
+        ),
+        (
+            Path(
+                "include/arborkdf/generated/"
+                "en_tr_jp_131072_wordlist.hpp"
+            ),
+            "generated header is stale",
+        ),
+    )
+    for relative, expected_error in mutations:
+        with tempfile.TemporaryDirectory(
+            prefix="arborkdf-wordlist-integrity-"
+        ) as name:
+            root = Path(name)
+            prepare_tree(root)
+            result = run_check(root)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"clean generator check failed: {result.stderr}"
+                )
+            target = root / relative
+            target.write_bytes(target.read_bytes()[:-1])
+            require_failure(run_check(root), expected_error)
 
     print("wordlist generator integrity tests passed")
     return 0

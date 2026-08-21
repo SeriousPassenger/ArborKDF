@@ -4,21 +4,42 @@ ArborKDF separates two jobs that have different mathematical requirements.
 
 ## Selecting a wordlist
 
-Every wordlist option accepts either a custom file path or the reserved selector
-`embedded_bip39`:
+Every wordlist option accepts either a custom file path or one of the reserved
+embedded selectors:
 
 ```text
 --wordlist embedded_bip39
---input-wordlist embedded_bip39
---output-wordlist embedded_bip39
+--input-wordlist embedded_en_tr_jp_131072
+--output-wordlist embedded_en_tr_jp_131072
 ```
 
 There is no default. Any other value is interpreted strictly as a file path. A
-custom file literally named `embedded_bip39` can be selected as
-`./embedded_bip39` or with an absolute path. Unknown values beginning with
+custom file whose name matches a selector can be selected with an unambiguous
+path such as `./embedded_bip39` or with an absolute path. Unknown values beginning with
 `embedded_` fail as unknown selectors instead of falling back to a file.
 
-The built-in list is the exact 2,048-entry BIP-39 English vocabulary. ArborKDF
+The executable reports the complete compiled catalog and can export its exact
+recovery bytes:
+
+```text
+arborkdf wordlist list
+arborkdf wordlist export --wordlist embedded_en_tr_jp_131072 --output en_tr_jp_131072.txt
+```
+
+`wordlist list` includes entry count, index width, byte-aligned encoding block,
+language memberships and overlaps, canonical byte count, and SHA-512. Export
+writes canonical UTF-8 text with LF line endings and a final LF. It requires a
+new path: existing files, directories, and symlinks are never overwritten, and
+standard-output export is deliberately unsupported. Custom files remain usable
+as wordlist inputs but are not copied by this command.
+
+An embedded selector fixes both vocabulary and index order as public recovery
+data. `embedded_en_tr_jp_131072` is immutable; an incompatible future revision
+must use a new selector rather than silently changing what this name means.
+
+## `embedded_bip39`
+
+This selector is the exact 2,048-entry BIP-39 English vocabulary. ArborKDF
 does **not** add the BIP-39 checksum or run BIP-39's mnemonic-to-seed procedure;
 it uses the vocabulary with ArborKDF's own explicitly documented phrase framing
 or `wordlist-bits-v1` codec.
@@ -43,6 +64,75 @@ To regenerate intentionally:
 make regenerate-wordlists
 make verify-wordlists
 ```
+
+## `embedded_en_tr_jp_131072`
+
+This project-defined, immutable v1 codebook deliberately includes all three
+requested language groups. Its final membership is exact:
+
+| Language group | Entries | Notes |
+|---|---:|---|
+| English (`en`) | 43,691 | 41,379 common to the US/GB sources, 1,280 US-only, and 1,032 GB-only |
+| Turkish (`tr`) | 43,691 | Lowercase NFC Turkish dictionary entries |
+| Japanese (`ja`) | 43,690 | ASCII roman-input-style forms derived from Japanese readings |
+| **Total** | **131,072 (`2^17`)** | No exact token occurs in more than one final language group |
+
+The Japanese forms are a pinned mechanical conversion for this codebook. They
+are not claimed to be canonical, reversible, or linguistically preferred
+romanizations. The Turkish entries may contain `ç`, `ğ`, dotless `ı`, `ö`, `ş`,
+and `ü`, so the combined file as a whole is UTF-8 rather than ASCII.
+
+The canonical LF-terminated source and its audit manifest are:
+
+```text
+third_party/arborkdf-wordlists/en_tr_jp_131072.txt
+third_party/arborkdf-wordlists/en_tr_jp_131072.manifest.json
+```
+
+Its canonical text has 131,072 unique entries, is 1,262,297 bytes including the
+final LF, and has SHA-512:
+
+```text
+e59905f19627e0f98e72887187463f9a0767592612ec337a8ff5e71e373f96d7e5b5c4066427ceb89a8acbb13bd5092327e92f7802b0afc2e64ee83e58780c8a
+```
+
+The release-engineering builder consumes exact pinned versions of Debian's
+`wamerican` and `wbritish` word files, `tdd-ai/hunspell-tr`'s Turkish dictionary,
+and NAIST-JDIC Japanese readings. It verifies every input's SHA-512 and line
+count before processing. English and ASCII Japanese candidates and NFC Turkish
+candidates are limited to 4–16 code points. Every exact spelling present in
+more than one language pool is removed before selection, producing final exact
+overlap counts of zero for `en&tr`, `en&ja`, `tr&ja`, and `en&tr&ja`.
+
+The remaining candidates are assigned their fixed near-equal quotas by
+domain-separated SHA3-512 rank, then put in index order with a separate domain
+and a documented bytewise tie-breaker. Hash ranking makes the build reproducible
+and avoids simply taking a source-order or alphabetical prefix. It does **not**
+add entropy, make the vocabulary statistically uniform, or cure linguistic
+confusability. Uniform random index selection is what supplies 17 ideal bits per
+word.
+
+To independently rebuild the source and manifest from those exact upstream
+files:
+
+```sh
+python3 extras/build_en_tr_jp_wordlist.py \
+  --american /path/to/american-english \
+  --british /path/to/british-english \
+  --turkish /path/to/tr_TR.dic \
+  --naist /path/to/naist-jdic.csv
+make regenerate-wordlists
+make verify-wordlists
+```
+
+The manifest records the source identities and digests, filters, candidate and
+collision counts, quotas, domains, framing, tie-breaker, language composition,
+and final hashes. A normal build does not fetch upstream data or rerun this
+release-engineering selection. Instead, `extras/gen_wordlist_header.py --check`
+verifies the committed canonical source, manifest, fixed golden indices, and
+generated embedding before C++ compilation. Embedded lookup has no runtime file
+or integrity-hash cost. Source licenses and notices are retained under
+`third_party/` and summarized in `THIRD_PARTY_NOTICES.md`.
 
 ## Master phrases
 
@@ -71,15 +161,16 @@ deleting or reordering words—or substituting another valid list entry—is acc
 as a different phrase and derives a different key. Backups therefore need an
 independent integrity/redundancy strategy.
 
-## Large spelling dictionaries
+## Larger-wordlist security and usability tradeoff
 
 Larger lists reduce the number of independently sampled words, but they do not
-automatically improve human usability. For the example Debian/Ubuntu files in
-the question:
+automatically strengthen a master or improve human usability. For uniformly and
+independently machine-selected master words:
 
 | List | Entries | Ideal bits/word | ≥128 ideal bits | ≥256 ideal bits | ≥512 ideal bits |
 |---|---:|---:|---:|---:|---:|
 | BIP-39 English | 2,048 | 11.000 | 12 (132 bits) | 24 (264 bits) | 47 (517 bits) |
+| `embedded_en_tr_jp_131072` | 131,072 | 17.000 | 8 (136 bits) | 16 (272 bits) | 31 (527 bits) |
 | `american-english` | 104,334 | 16.671 | 8 (133.37 bits) | 16 (266.73 bits) | 31 (516.80 bits) |
 | `british-english` | 103,494 | 16.659 | 8 (133.27 bits) | 16 (266.55 bits) | 31 (516.43 bits) |
 
@@ -87,6 +178,14 @@ Those figures assume independent uniform machine selection with replacement.
 They do not apply to a person choosing memorable words. The two system-list rows
 also assume those exact files pass ArborKDF's blank-line and duplicate checks;
 `wc -l` alone does not establish the usable entry count.
+
+Thus the 131,072-entry codebook carries exactly 17 ideal index bits per generated
+word and can represent a given ideal entropy target in fewer words than the
+2,048-entry vocabulary. That is its narrow mathematical advantage. It does not
+increase the entropy of bytes merely encoded into words, and it does not turn a
+human-chosen phrase into a 17-bits-per-word secret. Choosing familiar words,
+rejecting awkward samples, or following a memorable pattern changes the
+distribution and can reduce entropy substantially.
 
 Under an idealized generic quantum search, an `H`-bit uniformly sampled master
 offers at most an `H/2` query exponent. Therefore 256 ideal source bits correspond
@@ -105,6 +204,16 @@ apostrophe variants, inflections, homophones, and visually similar entries.
 Consequently, fewer words can still be harder to memorize, speak, and transcribe
 reliably. BIP-39 English was curated so every entry has a unique first four
 characters and confusing pairs are reduced.
+
+The combined embedded codebook is stable and reproducible, but it is still much
+less mnemonic-oriented than BIP-39 English. It contains Turkish letters,
+dictionary-derived stems, unfamiliar vocabulary, potentially sensitive or
+offensive terms, and mechanical Japanese ASCII forms. Its construction removes
+exact duplicates across language pools; it does not promise unique prefixes,
+pronunciation separation, edit-distance separation, or protection against
+visually or aurally confusable words. Users should retain the exact exported list
+and an independent integrity/redundancy mechanism rather than relying on memory
+alone.
 
 Both example system-list sizes are non-powers of two. ArborKDF can sample them
 without bias for generated master phrases, but `wordlist-bits-v1` must reject
@@ -131,6 +240,27 @@ be multiples of 88 bits. A 256-bit value is rejected; 264 bits encodes as 24
 words and is the smallest compatible length meeting the 128 security profile's
 minimum. For the 256 profile, 528 bits encodes as 48 words and is the smallest
 compatible length at or above its 512-bit minimum.
+
+For `embedded_en_tr_jp_131072`, `k = 17`, so byte-aligned input and whole-word
+boundaries coincide only every 136 bits. These are exact codec vectors and
+boundary cases:
+
+| Input | `B mod 17` | Result |
+|---:|---:|---|
+| 128 bits (16 bytes) | 9 | Rejected; nine bits would remain |
+| 136 bits (17 bytes), all zero | 0 | Eight copies of index-0 word `kyounenji` |
+| 256 bits (32 bytes) | 1 | Rejected; one bit would remain |
+| 272 bits (34 bytes), all zero | 0 | Sixteen copies of `kyounenji` |
+| 512 bits (64 bytes) | 2 | Rejected; two bits would remain |
+| 544 bits (68 bytes), all zero | 0 | Thirty-two copies of `kyounenji` |
+
+Decoding each accepted all-zero phrase returns the original exact byte length,
+including every leading zero. Because the 128 security profile requires at least
+256 output bits, 272 bits (16 words) is its smallest compatible output with this
+list. Because the 256 profile requires at least 512 output bits, its smallest
+compatible output is 544 bits (32 words). The 31-word, 527-bit figure in the
+master-phrase table is valid for independently generated phrase indices, whose
+framing does not require byte alignment; it is not a valid bare byte encoding.
 
 If a list is incompatible, ArborKDF emits no partial output. For a nonempty
 `B`-bit input, compatible list sizes are exactly:

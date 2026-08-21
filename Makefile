@@ -73,6 +73,7 @@ LIB_SOURCES := \
 	src/codec.cpp \
 	src/crypto.cpp \
 	src/entropy.cpp \
+	src/file.cpp \
 	src/openssl_context.cpp \
 	src/platform.cpp \
 	src/wordlist.cpp
@@ -120,11 +121,15 @@ check: test $(PROGRAM)
 	./$(PROGRAM) masterkey --help >$(NULL_DEVICE)
 	./$(PROGRAM) salt --help >$(NULL_DEVICE)
 	./$(PROGRAM) encoding --help >$(NULL_DEVICE)
+	./$(PROGRAM) wordlist --help >$(NULL_DEVICE)
 	./$(PROGRAM) subkey generate --help >$(NULL_DEVICE)
 	./$(PROGRAM) masterkey generate --help >$(NULL_DEVICE)
 	./$(PROGRAM) salt generate --help >$(NULL_DEVICE)
 	./$(PROGRAM) encoding encode --help >$(NULL_DEVICE)
 	./$(PROGRAM) encoding decode --help >$(NULL_DEVICE)
+	./$(PROGRAM) wordlist list --help >$(NULL_DEVICE)
+	./$(PROGRAM) wordlist export --help >$(NULL_DEVICE)
+	$(PYTHON) tests/test_wordlist_cli.py ./$(PROGRAM)
 	@test "$$(./$(PROGRAM) encoding encode \
 		--input-hex 0000000000000000000000 --wordlist embedded_bip39)" = \
 		"abandon abandon abandon abandon abandon abandon abandon abandon"

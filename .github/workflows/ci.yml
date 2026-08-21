@@ -23,7 +23,7 @@ jobs:
       - name: Static build
         run: |
           make clean
-          make static
+          make STATIC=1 check
       - name: Verify static executable
         run: |
           file arborkdf-static

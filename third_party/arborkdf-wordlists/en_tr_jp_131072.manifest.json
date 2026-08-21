@@ -1,0 +1,151 @@
+{
+  "bits_per_word": 17,
+  "byte_aligned_block_bits": 136,
+  "candidate_counts_after_cross_language_removal": {
+    "en": 63492,
+    "ja": 136033,
+    "tr": 71104
+  },
+  "candidate_counts_before_cross_language_removal": {
+    "en": 64488,
+    "ja": 136920,
+    "tr": 72596
+  },
+  "canonical_text": {
+    "bytes": 1262297,
+    "encoding": "UTF-8",
+    "final_lf": true,
+    "line_endings": "LF",
+    "sha3_512": "6ba29b110dc43ffa1dedaef2e3577c782036c2a4fedeb4cc18efd6e938d65c9a3627dc112a93339516e88a1b08057c2faf429a2ae3405b2990e5eeba6742ed00",
+    "sha512": "e59905f19627e0f98e72887187463f9a0767592612ec337a8ff5e71e373f96d7e5b5c4066427ceb89a8acbb13bd5092327e92f7802b0afc2e64ee83e58780c8a"
+  },
+  "cross_language_collisions": {
+    "en-ja": 229,
+    "en-tr": 834,
+    "en-tr-ja": 67,
+    "tr-ja": 725,
+    "unique-tokens-removed": 1654
+  },
+  "english_pool_composition": {
+    "american_only": 1885,
+    "british_only": 1512,
+    "common": 61091
+  },
+  "entries": 131072,
+  "final_language_memberships": {
+    "en": 43691,
+    "ja": 43690,
+    "tr": 43691
+  },
+  "final_overlaps": {
+    "en-ja": 0,
+    "en-tr": 0,
+    "en-tr-ja": 0,
+    "tr-ja": 0
+  },
+  "selected_counts": {
+    "en": 43691,
+    "ja": 43690,
+    "tr": 43691
+  },
+  "selected_english_composition": {
+    "american_only": 1280,
+    "british_only": 1032,
+    "common": 41379
+  },
+  "selection": {
+    "collision_policy": "remove every normalized token present in more than one language pool before selection",
+    "order_domain": "ArborKDF/wordlist/en-tr-jp-131072/v1/order",
+    "order_rank_frame": "domain || 0x00 || language || 0x00 || u32be(UTF-8 byte length) || UTF-8(word)",
+    "quotas": {
+      "en": 43691,
+      "ja": 43690,
+      "tr": 43691
+    },
+    "rank_hash": "SHA3-512",
+    "selection_domains": {
+      "en": "ArborKDF/wordlist/en-tr-jp-131072/v1/select/en",
+      "ja": "ArborKDF/wordlist/en-tr-jp-131072/v1/select/ja",
+      "tr": "ArborKDF/wordlist/en-tr-jp-131072/v1/select/tr"
+    },
+    "selection_rank_frame": "domain || 0x00 || u32be(UTF-8 byte length) || UTF-8(word)",
+    "tie_breaker": "unsigned lexicographic UTF-8 bytes, then ASCII language tag"
+  },
+  "selector": "embedded_en_tr_jp_131072",
+  "sources": {
+    "american": {
+      "accepted": 62976,
+      "entries": 104334,
+      "extracted_path": "usr/share/dict/american-english",
+      "name": "Debian wamerican 2020.12.07-4",
+      "package_sha256": "3b66a8174e8577767aec4c08b8742a2a7551f3a938da351d9aaef13ff0587f1e",
+      "package_url": "https://deb.debian.org/debian/pool/main/s/scowl/wamerican_2020.12.07-4_all.deb",
+      "rejected": {
+        "duplicate": 0,
+        "not-lowercase-ascii-4-to-16": 41358
+      },
+      "sha512": "58466bdacfce54022a9b4fd5f308397018befc2c8e3e56a20680e1be46e3dd31dbb43febbac0daf1d9815c47afa2125e6a245527461cc85d814ca2b5e33c8f19"
+    },
+    "british": {
+      "accepted": 62603,
+      "entries": 103494,
+      "extracted_path": "usr/share/dict/british-english",
+      "name": "Debian wbritish 2020.12.07-4",
+      "package_sha256": "460507558c9cec1ba9c41f074d4eab6a4a0015ec637787545dc4c70ccde2527f",
+      "package_url": "https://deb.debian.org/debian/pool/main/s/scowl/wbritish_2020.12.07-4_all.deb",
+      "rejected": {
+        "duplicate": 0,
+        "not-lowercase-ascii-4-to-16": 40891
+      },
+      "sha512": "229bc29c63d4ae43a34e6688acc896047d6d986539108e1458faca8f4fbb80a6082f6aa6d6b7506917977ab8b79a53a3c954ec5523dd5d2283f07bd6a340e5a6"
+    },
+    "japanese": {
+      "accepted": 136920,
+      "archive_sha256": "cb37700dc9a77b953f2bf3b15b49cfecd67848530a2cf8abcb09b594ca5628cc",
+      "archive_sha512": "03d04505d3d8d097d1389af987e87aca43d56ef36b0def9eb85e19ee15ffe3598d3acb1c78c6dde3b31519419acb87c595aaad594dd116b98ac5cabb82a2e61c",
+      "archive_url": "https://deb.debian.org/debian/pool/main/m/mecab-naist-jdic/mecab-naist-jdic_0.6.3.b-20111013.orig.tar.gz",
+      "entries": 485863,
+      "extracted_path": "mecab-naist-jdic-0.6.3b-20111013/naist-jdic.csv",
+      "name": "mecab-naist-jdic 0.6.3b-20111013",
+      "rejected": {
+        "duplicate-romanization": 131514,
+        "missing-reading": 1,
+        "non-base-conjugation": 190535,
+        "not-lowercase-ascii-4-to-16": 26893,
+        "short-row": 0
+      },
+      "romanization": "jaconv 0.5.0 kata2alphabet behavior",
+      "romanization_source": {
+        "commit": "4a1ea0b7a88602ac525c138b519bdd9d3e545449",
+        "golden_vectors": {
+          "ガッコウ": "gakkou",
+          "コーヒー": "ko-hi-",
+          "マッチ": "macchi"
+        },
+        "tag_object": "be1700fe9570f0f7b05fee5e7474ecf7441c5745",
+        "url": "https://github.com/ikegami-yukino/jaconv"
+      },
+      "sha512": "f6ccadbaaf66b12b5afebbdf1b3c22b2ca6d811ac4fb7cc1f3235a447529ffc0c3a3489f04c2b4159d5581ab88c218eabe59086a567a56924d028e5c74b8cc00"
+    },
+    "turkish": {
+      "accepted": 72596,
+      "commit": "7302eca5f3652fe7ae3d3ec06c44697c97342b4e",
+      "entries": 75909,
+      "name": "tdd-ai/hunspell-tr v1.1.1 tr_TR.dic",
+      "rejected": {
+        "duplicate": 0,
+        "not-letters": 1,
+        "not-lowercase": 0,
+        "not-nfc": 0,
+        "outside-length-4-to-16": 3312
+      },
+      "sha512": "f0464703769963d3ea22b248b5b2afdf955c53df21976cff253dea547f131b58eb68a129c9e78e41cf577c500d1c917149817f519f5aa189415a699c9ee6d4cf",
+      "source_url": "https://raw.githubusercontent.com/tdd-ai/hunspell-tr/7302eca5f3652fe7ae3d3ec06c44697c97342b4e/tr_TR.dic"
+    }
+  },
+  "standard": "ArborKDF-en-tr-jp-131072-v1",
+  "word_length_code_points": {
+    "maximum": 16,
+    "minimum": 4
+  }
+}

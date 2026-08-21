@@ -39,6 +39,29 @@ class Wordlist final {
     std::string source_name_;
 };
 
+struct EmbeddedWordlistCount final {
+    std::string_view label;
+    std::size_t count = 0U;
+};
+
+struct EmbeddedWordlistMetadata final {
+    std::string_view selector;
+    std::string_view display_name;
+    std::string_view standard_id;
+    std::string_view languages;
+    std::size_t word_count = 0U;
+    std::size_t bits_per_word = 0U;
+    std::size_t byte_aligned_block_bits = 0U;
+    std::size_t canonical_text_bytes = 0U;
+    std::string_view sha512_hex;
+    std::vector<EmbeddedWordlistCount> language_memberships;
+    std::vector<EmbeddedWordlistCount> exact_overlaps;
+};
+
+const std::vector<EmbeddedWordlistMetadata>& embedded_wordlist_catalog();
+
+std::string canonical_embedded_wordlist_text(std::string_view selector);
+
 struct WordlistSizeSuggestion final {
     std::size_t bits_per_word = 0U;
     std::string wordlist_size_decimal;
