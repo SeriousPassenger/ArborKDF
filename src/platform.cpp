@@ -471,7 +471,7 @@ public:
         gTerminalSignalPipe = static_cast<std::sig_atomic_t>(write_descriptor_);
         struct sigaction action {};
         action.sa_handler = terminal_signal_handler;
-        static_cast<void>(::sigemptyset(&action.sa_mask));
+        static_cast<void>(sigemptyset(&action.sa_mask));
         action.sa_flags = 0;
         for (std::size_t index = 0U; index < kTerminalSignals.size(); ++index) {
             if (::sigaction(kTerminalSignals[index], &action,
