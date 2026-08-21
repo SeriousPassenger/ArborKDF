@@ -16,8 +16,9 @@ Suggested GitHub description:
 ## Design highlights
 
 - CLI only; no colors, network access, configuration files, or hidden defaults.
-- Master input type is mandatory: validated UTF-8 or an explicitly selected
-  wordlist phrase.
+- Master input type is mandatory: validated UTF-8, raw bytes transported as
+  strict hex or canonical padded Base64, or an explicitly selected wordlist
+  phrase. Raw-byte hex and Base64 inputs are domain-separated from UTF-8 text.
 - Argon2id memory, iterations, and parallelism are all mandatory.
 - PBKDF2 iteration count is mandatory.
 - The public salt and virtual path are length-framed and bound into every subkey.
@@ -25,9 +26,12 @@ Suggested GitHub description:
   explicitly selected wordlist.
 - Wordlist output is exact: it fails instead of padding, truncating, or discarding
   even one bit.
-- OS CSPRNG output is the primary random source. Mouse events are supplemental and
-  cannot make OS RNG failure acceptable.
-- Mouse estimator results are printed separately and never averaged.
+- Linux `/dev/urandom` is mandatory and, after a blocking kernel-CSPRNG readiness
+  check, supplies at least 512 input bits. When the mouse diagnostic exceeds 512
+  bits, the OS input is increased to the same byte-rounded length; an OS RNG
+  failure is always fatal.
+- OS, mouse, and combined input diagnostics are printed as three separate compact
+  tables. Mouse estimates are never averaged or presented as validated entropy.
 
 The v1 suite deliberately uses two structurally different primitive families:
 SHA-3/KMAC and Argon2id's internal BLAKE2b. It does not add an unreviewed hash
@@ -37,6 +41,10 @@ cascade merely to count more algorithms.
 
 Requirements:
 
+- Linux with `<sys/random.h>` and a working `getrandom(2)` system call. This
+  version deliberately fails compilation on other operating systems because its
+  randomness backend is not implemented there; an unavailable readiness system
+  call also fails closed at runtime.
 - C++17 compiler (GCC or Clang)
 - GNU Make
 - Python 3.10 or newer (build-time verification of generated embedded wordlists only)
@@ -57,11 +65,9 @@ make static
 ```
 
 Static linking requires static archives for OpenSSL, libargon2, zlib, and their
-platform dependencies and produces `arborkdf-static` (or `.exe`). The separate
-name and object directory prevent a prior dynamic executable from being mistaken
-for a static rebuild. The project does not download or silently substitute a
-dependency. Cross-compiling with GNU Make uses an explicit `TARGET_OS`, for example
-`TARGET_OS=windows`; native MSVC/NMake is not currently supported.
+Linux dependencies and produces `arborkdf-static`. The separate name and object
+directory prevent a prior dynamic executable from being mistaken for a static
+rebuild. The project does not download or silently substitute a dependency.
 
 Do not distribute a bare static executable. A binary distribution must include
 the applicable wordlist and dependency notices/license materials, and must meet
@@ -72,6 +78,7 @@ the relevant source-availability obligations described in
 
 ```text
 arborkdf --help
+arborkdf --version
 arborkdf subkey generate --help
 arborkdf masterkey generate --help
 arborkdf salt generate --help
@@ -113,8 +120,16 @@ Use each command's help because cryptographic inputs and tunable costs are
 intentionally explicit. Interactive master entry is hidden and confirmed twice;
 the explicit `--master-stdin` mode is single-read for automation. Secrets are
 written only to standard output. Reports are written to standard error, while
-interactive prompts/progress use the controlling terminal when the platform
-provides one so redirected secret output stays clean.
+interactive prompts/progress use the Linux controlling terminal (`/dev/tty`) so
+redirected secret output stays clean.
+
+Generated material is accepted without a lossy manual conversion. A generated
+hex or Base64 master is read with the matching `--input-encoding`; both decode
+to the same versioned raw-byte master domain. A generated salt is supplied with
+`--salt VALUE --salt-encoding hex|base64|wordlist` and `--salt-wordlist SOURCE`
+when wordlist-encoded. The legacy `--salt-hex HEX` spelling remains accepted.
+`arborkdf --version` prints deterministic derivation-suite, random-conditioner,
+and mouse-transcript compatibility identifiers.
 
 ## Documentation
 

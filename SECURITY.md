@@ -3,10 +3,13 @@
 ArborKDF is pre-release and has not received an independent cryptographic or
 implementation audit. Its current output must be treated as experimental.
 
-Please report a vulnerability privately through GitHub's private vulnerability
-reporting feature if enabled. Do not include real master keys, salts derived from
-private material, or production outputs in a report. A minimal synthetic
-reproducer and affected commit are preferred.
+Report vulnerabilities through the repository's GitHub Security Advisory
+"Report a vulnerability" form. If that form is unavailable, open a public issue
+titled `Private security contact requested` without vulnerability details; the
+maintainer must establish a private channel before technical disclosure. Do not
+include real master keys, salts derived from private material, or production
+outputs in either route. A minimal synthetic reproducer and affected commit are
+preferred once a private channel exists.
 
 ## Non-claims
 

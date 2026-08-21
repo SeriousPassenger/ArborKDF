@@ -244,31 +244,34 @@ void append_string(Bytes& destination, const std::string& value) {
     Bytes output;
     output.reserve(output_bytes);
     std::uint32_t counter = 1U;
-    while (output.size() < output_bytes) {
-        Bytes input;
-        input.reserve(4U + sizeof(kLabel) + context.size() + 5U);
-        append_u32(input, counter);
-        input.insert(input.end(), kLabel, kLabel + sizeof(kLabel) - 1U);
-        input.push_back(0U);
-        input.insert(input.end(), context.begin(), context.end());
-        append_u32(input, static_cast<std::uint32_t>(output_bits));
-        Bytes block = hmac_sha3_512(key, input);
-        const std::size_t remaining = output_bytes - output.size();
-        const std::size_t take = std::min(remaining, block.size());
-        try {
-            output.insert(output.end(), block.begin(), block.begin() +
-                                                   static_cast<std::ptrdiff_t>(take));
-        } catch (...) {
+    try {
+        while (output.size() < output_bytes) {
+            Bytes input;
+            input.reserve(4U + sizeof(kLabel) + context.size() + 5U);
+            append_u32(input, counter);
+            input.insert(input.end(), kLabel, kLabel + sizeof(kLabel) - 1U);
+            input.push_back(0U);
+            input.insert(input.end(), context.begin(), context.end());
+            append_u32(input, static_cast<std::uint32_t>(output_bits));
+            Bytes block = hmac_sha3_512(key, input);
+            const std::size_t remaining = output_bytes - output.size();
+            const std::size_t take = std::min(remaining, block.size());
+            try {
+                output.insert(output.end(), block.begin(), block.begin() +
+                                                       static_cast<std::ptrdiff_t>(take));
+            } catch (...) {
+                secure_clear(block);
+                throw;
+            }
             secure_clear(block);
-            secure_clear(output);
-            throw;
+            if (counter == std::numeric_limits<std::uint32_t>::max()) {
+                throw Error("SP 800-108 counter exhausted");
+            }
+            ++counter;
         }
-        secure_clear(block);
-        if (counter == std::numeric_limits<std::uint32_t>::max()) {
-            secure_clear(output);
-            throw Error("SP 800-108 counter exhausted");
-        }
-        ++counter;
+    } catch (...) {
+        secure_clear(output);
+        throw;
     }
     return output;
 }

@@ -1,5 +1,7 @@
 /arborkdf
 /arborkdf-tests
+/arborkdf-*
+/arborkdf-tests-*
 /build/
 *.o
 *.d

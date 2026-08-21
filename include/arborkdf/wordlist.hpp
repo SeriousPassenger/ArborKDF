@@ -19,6 +19,11 @@ class WordlistError : public std::runtime_error {
 
 class Wordlist final {
   public:
+    Wordlist(const Wordlist& other);
+    Wordlist& operator=(const Wordlist& other);
+    Wordlist(Wordlist&& other);
+    Wordlist& operator=(Wordlist&& other);
+
     static Wordlist from_source(const std::string& source);
     static Wordlist from_file(const std::string& path);
     static Wordlist parse(std::string_view contents,
@@ -33,9 +38,14 @@ class Wordlist final {
 
   private:
     Wordlist(std::vector<std::string> words, std::string source_name);
+    void rebuild_indices();
+    void swap(Wordlist& other) noexcept;
 
     std::vector<std::string> words_;
-    std::unordered_map<std::string, std::size_t> indices_;
+    // Every key is a non-owning view into words_. Wordlist is immutable after
+    // construction, and the explicit copy/move operations rebuild or transfer
+    // the lookup together with its backing storage.
+    std::unordered_map<std::string_view, std::size_t> indices_;
     std::string source_name_;
 };
 
@@ -101,6 +111,9 @@ Bytes decode_wordlist_bits_v1(const std::vector<std::string>& words,
                               const Wordlist& wordlist);
 
 std::string join_words(const std::vector<std::string>& words);
+// Cleanses the owned word copies after joining them. Prefer this overload for
+// encoded secret material.
+std::string join_words(std::vector<std::string>&& words);
 
 std::vector<std::size_t> parse_master_phrase_indices(
     std::string_view phrase, const Wordlist& wordlist);

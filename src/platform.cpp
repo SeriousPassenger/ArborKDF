@@ -44,9 +44,8 @@
 namespace arborkdf {
 namespace {
 
-constexpr std::size_t kProgressWidth = 40U;
-constexpr double kProgressTargetBits = 256.0;
 constexpr std::size_t kMaximumMouseEvents = 1000000U;
+constexpr std::size_t kProgressLineVisibleColumns = 78U;
 constexpr auto kProgressRefreshInterval = std::chrono::milliseconds(500);
 
 void wipe_mouse_events(std::vector<MouseEvent>& events) noexcept {
@@ -129,28 +128,7 @@ void enforce_mouse_event_limit(const std::vector<MouseEvent>& events) {
 }
 
 [[nodiscard]] std::string progress_line(const std::vector<MouseEvent>& events) {
-    const EntropyReport report = analyze_mouse_events(events);
-    std::ostringstream output;
-    output << '\r' << "Mouse diagnostic projection [";
-    std::size_t filled = 0U;
-    if (report.diagnostic_minimum_bits.has_value()) {
-        const double ratio = std::max(0.0, *report.diagnostic_minimum_bits) /
-                             kProgressTargetBits;
-        const double scaled = std::floor(std::min(1.0, ratio) *
-                                         static_cast<double>(kProgressWidth));
-        filled = static_cast<std::size_t>(scaled);
-    }
-    output << std::string(filled, '#') << std::string(kProgressWidth - filled, '.');
-    output << "] ";
-    if (report.diagnostic_minimum_bits.has_value()) {
-        output.setf(std::ios::fixed);
-        output.precision(1);
-        output << *report.diagnostic_minimum_bits << "/256 bits";
-    } else {
-        output << "warming up; " << events.size() << " events";
-    }
-    output << " - Enter stops";
-    return output.str();
+    return format_mouse_progress_line(analyze_mouse_events(events));
 }
 
 #ifndef _WIN32
@@ -756,6 +734,30 @@ struct SgrMouseRecord final {
 
 }  // namespace
 
+std::string format_mouse_progress_line(const EntropyReport& report) {
+    if (report.distinct_symbol_pair_count > report.event_count) {
+        throw Error(
+            "mouse report has more distinct symbol pairs than observed events");
+    }
+    std::ostringstream output;
+    output << "Obs " << report.event_count
+           << " | uniq " << report.distinct_symbol_pair_count << " | min ";
+    if (report.diagnostic_minimum_bits.has_value()) {
+        output.setf(std::ios::fixed);
+        output.precision(1);
+        output << *report.diagnostic_minimum_bits << 'b';
+    } else {
+        output << "warming";
+    }
+    output << " | Enter";
+    std::string visible = output.str();
+    if (visible.size() > kProgressLineVisibleColumns) {
+        throw Error("mouse progress display exceeds its terminal-width limit");
+    }
+    visible.append(kProgressLineVisibleColumns - visible.size(), ' ');
+    return "\r" + visible;
+}
+
 std::string read_hidden_line(const std::string& prompt,
                              const std::size_t maximum_bytes) {
 #ifdef _WIN32
@@ -848,8 +850,11 @@ std::vector<MouseEvent> collect_mouse_events() {
     std::vector<MouseEvent> events;
     reserve_mouse_transcript(events);
     MouseEventErrorWiper error_wiper(events);
-    std::cerr << "Move the mouse to add supplemental randomness; press Enter to finish.\n"
-              << "Live figures are diagnostics, not validated entropy or security credit.\n";
+    std::cerr
+        << "Linux /dev/urandom will supply at least 512 input bits.\n"
+        << "Move the mouse to add supplemental input; press Enter to finish.\n"
+        << "If the mouse diagnostic exceeds 512 bits, the OS input length will match it.\n"
+        << "Live mouse figures are diagnostics, not validated entropy or security credit.\n";
 #ifdef _WIN32
     HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
     DWORD original = 0U;

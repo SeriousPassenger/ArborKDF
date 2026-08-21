@@ -36,11 +36,12 @@ The public salt is independently domain-separated for PBKDF2 and Argon2id. The
 path KDF context contains both public salt and path with explicit lengths. Output
 length and suite identity are cryptographically bound.
 
-There are no cost defaults. The CLI accepts every Argon2id parameter set allowed
-by RFC 9106, but warns when it does not meet either named RFC profile
-(`m=2 GiB,t=1,p=4` or the memory-constrained `m=64 MiB,t=3,p=4`). The warning is
-not a benchmark: users must calibrate both Argon2id and PBKDF2 on the actual
-air-gapped target and record the exact public parameters for recovery.
+There are no cost defaults. The CLI accepts implementation-supported RFC-valid
+values and deliberately caps parallelism at 256. It warns unless the complete
+tuple exactly matches one of RFC 9106's named profiles (`m=2 GiB,t=1,p=4` or the
+memory-constrained `m=64 MiB,t=3,p=4`). The warning is not a benchmark: users
+must calibrate both Argon2id and PBKDF2 on the actual air-gapped target and
+record the exact public parameters for recovery.
 
 Argon2id uses BLAKE2b internally. This supplies structural diversity from Keccak
 without adding another dependency solely for appearances.

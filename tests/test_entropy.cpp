@@ -1,9 +1,14 @@
 #include "arborkdf/entropy.hpp"
 #include "arborkdf/error.hpp"
+#include "arborkdf/platform.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -32,6 +37,57 @@ void require(const bool condition, const std::string& message) {
     const std::size_t count) {
     return std::vector<arborkdf::MouseEvent>(
         count, arborkdf::MouseEvent{1, -1, 8000000U, 0U});
+}
+
+[[nodiscard]] std::vector<arborkdf::MouseEvent> random_like_events(
+    const std::size_t count) {
+    std::vector<arborkdf::MouseEvent> events;
+    events.reserve(count);
+    std::uint32_t state = 0x9e3779b9U;
+    for (std::size_t index = 0U; index < count; ++index) {
+        state ^= state << 13U;
+        state ^= state >> 17U;
+        state ^= state << 5U;
+        const std::int32_t dx = static_cast<std::int32_t>(state & 0x0fU) - 8;
+        const std::int32_t dy =
+            static_cast<std::int32_t>((state >> 4U) & 0x0fU) - 8;
+        const std::uint64_t microseconds = 7000U + ((state >> 8U) & 0xffU);
+        events.push_back(arborkdf::MouseEvent{dx,
+                                              dy,
+                                              microseconds * 1000U,
+                                              0U});
+    }
+    return events;
+}
+
+[[nodiscard]] std::vector<arborkdf::MouseEvent> binary_random_like_events(
+    const std::size_t count) {
+    std::vector<arborkdf::MouseEvent> events;
+    events.reserve(count);
+    std::uint32_t state = 0x243f6a88U;
+    for (std::size_t index = 0U; index < count; ++index) {
+        state ^= state << 13U;
+        state ^= state >> 17U;
+        state ^= state << 5U;
+        const bool motion_bit = (state & 1U) != 0U;
+        const bool timing_bit = (state & 2U) != 0U;
+        events.push_back(
+            arborkdf::MouseEvent{motion_bit ? 1 : -1,
+                                 motion_bit ? -1 : 1,
+                                 timing_bit ? 8000000U : 8001000U,
+                                 0U});
+    }
+    return events;
+}
+
+[[nodiscard]] std::size_t maximum_line_width(const std::string& text) {
+    std::istringstream input(text);
+    std::string line;
+    std::size_t maximum = 0U;
+    while (std::getline(input, line)) {
+        maximum = std::max(maximum, line.size());
+    }
+    return maximum;
 }
 
 void test_symbolization_and_repeat_preservation() {
@@ -76,8 +132,8 @@ void test_constant_and_alternating_diagnostics() {
         arborkdf::analyze_mouse_events(constant_events(256U));
     const auto& constant_mcv =
         find_row(constant, "motion-v1", "MCV min-entropy (Wilson upper)");
-    const auto& constant_markov =
-        find_row(constant, "motion-v1", "First-order Markov fitted path");
+    const auto& constant_markov = find_row(
+        constant, "motion-v1", "First-order transition min-entropy");
     const auto& constant_deflate =
         find_row(constant, "motion-v1", "Raw DEFLATE compressed size/ratio");
     require(constant_mcv.available && constant_mcv.bits_per_symbol.has_value(),
@@ -95,10 +151,50 @@ void test_constant_and_alternating_diagnostics() {
     require(constant.diagnostic_minimum_bits.has_value() &&
                 std::fabs(*constant.diagnostic_minimum_bits) < 1.0e-12,
             "constant diagnostic minimum is zero");
+    require(constant.distinct_symbol_pair_count == 1U,
+            "repeated events remain one distinct diagnostic symbol pair");
+
+    std::vector<arborkdf::MouseEvent> short_alternating;
+    short_alternating.reserve(64U);
+    for (std::size_t index = 0U; index < 64U; ++index) {
+        const bool even = index % 2U == 0U;
+        short_alternating.push_back(
+            arborkdf::MouseEvent{even ? 1 : -1,
+                                 even ? -1 : 1,
+                                 even ? 8000000U : 8001000U,
+                                 0U});
+    }
+    const arborkdf::EntropyReport short_alternating_report =
+        arborkdf::analyze_mouse_events(short_alternating);
+    require(short_alternating_report.diagnostic_minimum_bits.has_value() &&
+                std::fabs(*short_alternating_report.diagnostic_minimum_bits) <
+                    1.0e-12,
+            "short deterministic alternation is gated to zero before Markov");
+    require(short_alternating_report.distinct_symbol_pair_count == 2U,
+            "alternation reports two distinct diagnostic symbol pairs");
+
+    const arborkdf::EntropyReport short_nonperiodic_report =
+        arborkdf::analyze_mouse_events(random_like_events(64U));
+    const auto& short_nonperiodic_mcv = find_row(
+        short_nonperiodic_report,
+        "motion-v1",
+        "MCV min-entropy (Wilson upper)");
+    const auto& short_nonperiodic_gate = find_row(
+        short_nonperiodic_report,
+        "motion-v1",
+        "Exact repeated-prefix gate");
+    require(short_nonperiodic_mcv.projected_bits.has_value() &&
+                *short_nonperiodic_mcv.projected_bits > 0.0,
+            "pre-128 nonperiodic MCV is individually positive");
+    require(!short_nonperiodic_gate.projected_bits.has_value(),
+            "pre-128 nonperiodic repeat gate remains inactive");
+    require(!short_nonperiodic_report.diagnostic_minimum_bits.has_value(),
+            "pre-128 nonperiodic input cannot use MCV alone");
 
     std::vector<arborkdf::MouseEvent> alternating;
-    alternating.reserve(256U);
-    for (std::size_t index = 0U; index < 256U; ++index) {
+    constexpr std::size_t kAlternatingRegressionEvents = 32768U;
+    alternating.reserve(kAlternatingRegressionEvents);
+    for (std::size_t index = 0U; index < kAlternatingRegressionEvents; ++index) {
         const bool even = index % 2U == 0U;
         alternating.push_back(
             arborkdf::MouseEvent{even ? 1 : -1,
@@ -111,28 +207,76 @@ void test_constant_and_alternating_diagnostics() {
     const auto& alternating_mcv = find_row(
         alternating_report, "motion-v1", "MCV min-entropy (Wilson upper)");
     const auto& alternating_markov = find_row(
-        alternating_report, "motion-v1", "First-order Markov fitted path");
+        alternating_report, "motion-v1", "First-order transition min-entropy");
     require(alternating_mcv.bits_per_symbol.has_value() &&
                 alternating_markov.bits_per_symbol.has_value(),
             "alternating estimates available");
     require(*alternating_markov.bits_per_symbol < *alternating_mcv.bits_per_symbol,
             "Markov diagnostic detects alternating predictability");
+    require(alternating_markov.projected_bits.has_value() &&
+                std::fabs(*alternating_markov.projected_bits) < 1.0e-12,
+            "long deterministic alternation does not accumulate entropy");
+    require(alternating_report.diagnostic_minimum_bits.has_value() &&
+                std::fabs(*alternating_report.diagnostic_minimum_bits) < 1.0e-12,
+            "long deterministic alternation leaves overall diagnostic at zero");
+
+    std::vector<arborkdf::MouseEvent> higher_order_periodic;
+    constexpr std::size_t kHigherOrderRegressionEvents = 32768U;
+    higher_order_periodic.reserve(kHigherOrderRegressionEvents);
+    const std::vector<arborkdf::MouseEvent> pattern{
+        arborkdf::MouseEvent{1, -1, 8000000U, 0U},
+        arborkdf::MouseEvent{2, -2, 8001000U, 0U},
+        arborkdf::MouseEvent{1, -1, 8000000U, 0U},
+        arborkdf::MouseEvent{3, -3, 8002000U, 0U}};
+    for (std::size_t index = 0U; index < kHigherOrderRegressionEvents; ++index) {
+        higher_order_periodic.push_back(pattern[index % pattern.size()]);
+    }
+    const arborkdf::EntropyReport higher_order_report =
+        arborkdf::analyze_mouse_events(higher_order_periodic);
+    const auto& repeat_gate = find_row(
+        higher_order_report, "motion-v1", "Exact repeated-prefix gate");
+    require(repeat_gate.projected_bits.has_value() &&
+                std::fabs(*repeat_gate.projected_bits) < 1.0e-12,
+            "higher-order exact repetition triggers the zero gate");
+    require(higher_order_report.diagnostic_minimum_bits.has_value() &&
+                std::fabs(*higher_order_report.diagnostic_minimum_bits) <
+                    1.0e-12,
+            "higher-order exact repetition cannot accumulate mouse bits");
+
+    std::vector<arborkdf::MouseEvent> prefixed_periodic;
+    prefixed_periodic.reserve(8193U);
+    prefixed_periodic.push_back(
+        arborkdf::MouseEvent{0, 0, 7123456U, 0U});
+    for (std::size_t index = 0U; index < 8192U; ++index) {
+        prefixed_periodic.push_back(pattern[index % pattern.size()]);
+    }
+    const arborkdf::EntropyReport prefixed_report =
+        arborkdf::analyze_mouse_events(prefixed_periodic);
+    const auto& prefixed_gate = find_row(
+        prefixed_report, "motion-v1", "Exact repeated-prefix gate");
+    require(!prefixed_gate.projected_bits.has_value(),
+            "synthetic first event disrupts the exact-prefix gate fixture");
+    require(prefixed_report.diagnostic_minimum_bits.has_value() &&
+                std::fabs(*prefixed_report.diagnostic_minimum_bits) < 1.0e-12,
+            "compression gate catches a periodic tail after the first event");
+
+    std::vector<arborkdf::MouseEvent> periodic_with_deviation =
+        higher_order_periodic;
+    periodic_with_deviation.push_back(
+        arborkdf::MouseEvent{7, 7, 8123456U, 0U});
+    const arborkdf::EntropyReport deviation_report =
+        arborkdf::analyze_mouse_events(periodic_with_deviation);
+    const auto& deviation_gate = find_row(
+        deviation_report, "motion-v1", "Exact repeated-prefix gate");
+    require(!deviation_gate.projected_bits.has_value(),
+            "final deviation disrupts the exact-prefix gate fixture");
+    require(deviation_report.diagnostic_minimum_bits.has_value() &&
+                std::fabs(*deviation_report.diagnostic_minimum_bits) < 1.0e-12,
+            "one deviation cannot erase the compression anomaly gate");
 }
 
 void test_random_like_and_statuses() {
-    std::vector<arborkdf::MouseEvent> events;
-    events.reserve(512U);
-    std::uint32_t state = 0x9e3779b9U;
-    for (std::size_t index = 0U; index < 512U; ++index) {
-        state ^= state << 13U;
-        state ^= state >> 17U;
-        state ^= state << 5U;
-        const std::int32_t dx = static_cast<std::int32_t>(state & 0x0fU) - 8;
-        const std::int32_t dy =
-            static_cast<std::int32_t>((state >> 4U) & 0x0fU) - 8;
-        const std::uint64_t microseconds = 7000U + ((state >> 8U) & 0xffU);
-        events.push_back(arborkdf::MouseEvent{dx, dy, microseconds * 1000U, 0U});
-    }
+    const std::vector<arborkdf::MouseEvent> events = random_like_events(512U);
     const arborkdf::EntropyReport report = arborkdf::analyze_mouse_events(events);
     const auto& shannon = find_row(report, "motion-v1", "Shannon entropy");
     const auto& mcv =
@@ -159,7 +303,9 @@ void test_random_like_and_statuses() {
     const auto& short_mcv =
         find_row(short_report, "motion-v1", "MCV min-entropy (Wilson upper)");
     const auto& short_markov =
-        find_row(short_report, "motion-v1", "First-order Markov fitted path");
+        find_row(short_report,
+                 "motion-v1",
+                 "First-order transition min-entropy");
     require(!short_mcv.available &&
                 short_mcv.status.find("need at least 32") != std::string::npos,
             "MCV reports minimum sample requirement");
@@ -168,6 +314,13 @@ void test_random_like_and_statuses() {
             "Markov reports minimum sample requirement");
     require(!short_report.diagnostic_minimum_bits.has_value(),
             "descriptive rows do not create a diagnostic minimum");
+
+    const arborkdf::EntropyReport binary_report =
+        arborkdf::analyze_mouse_events(binary_random_like_events(8192U));
+    require(binary_report.diagnostic_minimum_bits.has_value() &&
+                *binary_report.diagnostic_minimum_bits > 512.0,
+            "unpredictable-looking binary marginals are not zeroed merely "
+            "because their alphabet compresses");
 }
 
 void test_report_policy() {
@@ -176,34 +329,160 @@ void test_report_policy() {
     require(report.mouse_security_credit_bits == 0.0,
             "mouse security credit is always zero");
     const std::string text = arborkdf::format_entropy_report(report);
-    require(text.find("not a validation") != std::string::npos,
+    require(text.find("Mouse estimator diagnostics") != std::string::npos,
+            "mouse report heading");
+    require(text.find("Not source validation") != std::string::npos,
             "report validation disclaimer");
-    require(text.find("No average was calculated.") != std::string::npos,
+    require(text.find("no average is used") != std::string::npos,
             "report explicitly avoids averaging");
-    require(text.find("Mouse security credit: 0.000 bits") != std::string::npos,
-            "formatted zero security credit");
-    require(text.find("not an entropy estimate") != std::string::npos,
-            "formatted compression warning");
-    require(text.find("minimum=128") != std::string::npos,
-            "formatted minimum sample requirement");
+    require(text.find("DEFLATE") != std::string::npos,
+            "compression diagnostic is visible");
+    require(text.find("Distinct motion/timing pairs") != std::string::npos &&
+                text.find("Repeated symbolic observations") != std::string::npos,
+            "observed and repeated-symbol counts are shown separately");
+    require(maximum_line_width(text) <= 79U,
+            "mouse table and notes fit narrow terminals");
+
+    arborkdf::EntropyReport maximum_progress{};
+    maximum_progress.event_count = 1000000U;
+    maximum_progress.distinct_symbol_pair_count = 65536U;
+    maximum_progress.diagnostic_minimum_bits = 8000000.0;
+    const std::string long_progress =
+        arborkdf::format_mouse_progress_line(maximum_progress);
+    require(long_progress.size() == 79U && long_progress.front() == '\r',
+            "worst-case live progress is padded to 78 visible columns");
+    maximum_progress.diagnostic_minimum_bits = 0.0;
+    const std::string short_progress =
+        arborkdf::format_mouse_progress_line(maximum_progress);
+    require(short_progress.size() == long_progress.size(),
+            "shorter progress updates overwrite stale trailing characters");
+
+    bool malformed_report_rejected = false;
+    try {
+        arborkdf::EntropyReport malformed{};
+        malformed.event_count = 1U;
+        malformed.distinct_symbol_pair_count = 2U;
+        static_cast<void>(arborkdf::format_entropy_report(malformed));
+    } catch (const arborkdf::Error&) {
+        malformed_report_rejected = true;
+    }
+    require(malformed_report_rejected,
+            "malformed distinct-pair count is rejected before subtraction");
 }
 
-void test_conditioner() {
+void test_os_sizing_policy() {
+    require(arborkdf::required_os_random_bytes(std::nullopt) == 64U,
+            "unavailable mouse diagnostic uses 512 OS input bits");
+    require(arborkdf::required_os_random_bytes(0.0) == 64U,
+            "zero mouse diagnostic uses 512 OS input bits");
+    require(arborkdf::required_os_random_bytes(512.0) == 64U,
+            "512 mouse diagnostic bits use 64 OS bytes");
+    require(arborkdf::required_os_random_bytes(512.001) == 65U,
+            "mouse diagnostic is rounded up to a whole OS byte");
+    require(arborkdf::required_os_random_bytes(520.0) == 65U,
+            "byte-aligned mouse diagnostic is exactly matched");
+    require(arborkdf::required_os_random_bytes(521.0) == 66U,
+            "next partial byte rounds upward");
+
+    for (const double invalid : {-1.0,
+                                 std::numeric_limits<double>::infinity(),
+                                 std::numeric_limits<double>::quiet_NaN()}) {
+        bool rejected = false;
+        try {
+            static_cast<void>(arborkdf::required_os_random_bytes(invalid));
+        } catch (const arborkdf::Error&) {
+            rejected = true;
+        }
+        require(rejected, "invalid mouse diagnostic bit count rejected");
+    }
+    bool excessive_rejected = false;
+    try {
+        const double excessive =
+            static_cast<double>(arborkdf::kMaximumOsRandomInputBytes) * 8.0 +
+            1.0;
+        static_cast<void>(arborkdf::required_os_random_bytes(excessive));
+    } catch (const arborkdf::Error&) {
+        excessive_rejected = true;
+    }
+    require(excessive_rejected, "excessive OS random input request rejected");
+}
+
+void test_conditioner_and_tables() {
     const std::vector<arborkdf::MouseEvent> events = constant_events(4U);
-    const arborkdf::Bytes first =
+    const arborkdf::ConditionedRandomResult first =
         arborkdf::condition_random(events, "ArborKDF/test/masterkey", 32U);
-    const arborkdf::Bytes second =
+    const arborkdf::ConditionedRandomResult second =
         arborkdf::condition_random(events, "ArborKDF/test/masterkey", 32U);
-    require(first.size() == 32U && second.size() == 32U,
+    require(first.bytes.size() == 32U && second.bytes.size() == 32U,
             "conditioner output size");
-    require(first != second, "fresh OS randomness changes conditioned output");
+    require(first.bytes != second.bytes,
+            "fresh /dev/urandom input changes conditioned output");
+    require(first.diagnostics.os.path == "/dev/urandom" &&
+                first.diagnostics.os.bytes_read == 64U &&
+                first.diagnostics.os.input_bits == 512U,
+            "conditioner reports exact minimum OS input");
+    require(first.diagnostics.combined.os_policy_percent == 100.0 &&
+                first.diagnostics.combined.mouse_policy_percent == 0.0,
+            "unavailable mouse estimate has OS-only policy weighting");
+
+    const std::string formatted =
+        arborkdf::format_conditioning_diagnostics(first.diagnostics);
+    require(formatted.find("OS randomness diagnostics") != std::string::npos,
+            "OS diagnostics table heading");
+    require(formatted.find("Mouse estimator diagnostics") != std::string::npos,
+            "mouse diagnostics table heading");
+    require(formatted.find("Combined conditioner diagnostics") !=
+                std::string::npos,
+            "combined diagnostics table heading");
+    require(formatted.find("/dev/urandom") != std::string::npos,
+            "OS source path is visible");
+    require(maximum_line_width(formatted) <= 79U,
+            "all diagnostic tables and notes fit narrow terminals");
+
+    const arborkdf::ConditionedRandomResult below_threshold =
+        arborkdf::condition_random(random_like_events(128U),
+                                   "ArborKDF/test/below-threshold",
+                                   32U);
+    require(below_threshold.diagnostics.mouse.diagnostic_minimum_bits.has_value() &&
+                *below_threshold.diagnostics.mouse.diagnostic_minimum_bits > 0.0 &&
+                *below_threshold.diagnostics.mouse.diagnostic_minimum_bits < 512.0,
+            "random-like 128-event fixture has a positive sub-512 diagnostic");
+    require(below_threshold.diagnostics.os.bytes_read == 64U,
+            "sub-512 diagnostic retains the 64-byte OS minimum");
+    require(std::fabs(
+                below_threshold.diagnostics.combined.mouse_policy_weight_bits -
+                *below_threshold.diagnostics.mouse.diagnostic_minimum_bits) <
+                1.0e-12,
+            "sub-512 policy uses the unrounded mouse diagnostic");
+    require(below_threshold.diagnostics.combined.os_policy_percent > 50.0 &&
+                below_threshold.diagnostics.combined.os_policy_percent < 100.0,
+            "sub-512 policy share is OS-majority rather than forced 50/50");
+
+    const arborkdf::ConditionedRandomResult high_mouse =
+        arborkdf::condition_random(random_like_events(8192U),
+                                   "ArborKDF/test/high-mouse",
+                                   32U);
+    require(high_mouse.diagnostics.mouse.diagnostic_minimum_bits.has_value() &&
+                *high_mouse.diagnostics.mouse.diagnostic_minimum_bits > 512.0,
+            "high-mouse test fixture exceeds the OS minimum");
+    require(high_mouse.diagnostics.os.bytes_read ==
+                arborkdf::required_os_random_bytes(
+                    high_mouse.diagnostics.mouse.diagnostic_minimum_bits),
+            "actual OS read exactly matches the byte-rounded sizing policy");
+    require(std::fabs(high_mouse.diagnostics.combined.os_policy_percent - 50.0) <
+                    1.0e-12 &&
+                std::fabs(
+                    high_mouse.diagnostics.combined.mouse_policy_percent - 50.0) <
+                    1.0e-12,
+            "high mouse diagnostic uses exact 50/50 policy weighting");
 
     arborkdf::StreamingRandomConditioner streaming("ArborKDF/test/salt");
     for (const arborkdf::MouseEvent& event : events) {
         streaming.add_event(event);
     }
     require(streaming.event_count() == events.size(), "streaming event count");
-    require(streaming.finish(48U).size() == 48U, "streaming output size");
+    require(streaming.finish(48U).bytes.size() == 48U,
+            "streaming output size");
 
     bool second_finish_rejected = false;
     try {
@@ -229,6 +508,17 @@ void test_conditioner() {
         zero_output_rejected = true;
     }
     require(zero_output_rejected, "zero output rejected");
+
+    bool excessive_output_rejected = false;
+    try {
+        static_cast<void>(arborkdf::condition_random(
+            events,
+            "ArborKDF/test/invalid",
+            arborkdf::kMaximumConditionedOutputBytes + 1U));
+    } catch (const arborkdf::Error&) {
+        excessive_output_rejected = true;
+    }
+    require(excessive_output_rejected, "excessive output rejected");
 }
 
 }  // namespace
@@ -238,5 +528,6 @@ void run_entropy_tests() {
     test_constant_and_alternating_diagnostics();
     test_random_like_and_statuses();
     test_report_policy();
-    test_conditioner();
+    test_os_sizing_policy();
+    test_conditioner_and_tables();
 }

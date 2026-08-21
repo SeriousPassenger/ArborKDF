@@ -12,11 +12,37 @@ Domain strings are exact UTF-8/ASCII without an implicit NUL terminator.
 - Master UTF-8: strictly valid UTF-8, framed with its encoding identifier and byte
   length; CLI input is limited to 4,096 bytes. No Unicode normalization or
   case-folding is performed, so byte-distinct spellings derive distinct keys.
+- Master raw bytes: 1 through 4,096 bytes, transported as strict hex or canonical
+  padded RFC 4648 Base64. Both transports decode before framing and therefore
+  represent the same master; they are domain-separated from UTF-8 text.
 - Master wordlist phrase: validated list length, word count, and zero-based indices
   are framed; no checksum is present; CLI phrase input is limited to 8 MiB.
 - PBKDF2 iterations, Argon2id memory KiB, Argon2id iterations, Argon2id
   parallelism, security target, output bit length, input encoding, and output
   encoding are mandatory CLI inputs.
+
+Master framing is:
+
+```text
+utf8_master = frame("ArborKDF/master/utf8/v1") || frame(utf8_bytes)
+raw_master  = frame("ArborKDF/master/raw-bytes/v1") || frame(raw_bytes)
+
+wordlist_master = ascii("ArborKDF/master-phrase/v1")
+               || u64(wordlist_size)
+               || u64(word_count)
+               || u64(index[0]) || ... || u64(index[word_count - 1])
+```
+
+The wordlist-master tag is deliberately raw ASCII rather than `frame(tag)`;
+this is part of the existing v1 byte format. Indices are zero-based. The frame
+binds the list size but not the list contents or identity, so recovery also
+requires the exact same ordered wordlist. See `WORDLISTS.md` for that limitation
+and the compatibility rules.
+
+Public salt may be transported as strict hex, canonical padded RFC 4648 Base64,
+or exact `wordlist-bits-v1`. Transport encoding does not enter the KDF; all three
+forms decode to the same public-salt bytes. The legacy `--salt-hex` option has the
+same semantics as `--salt-encoding hex --salt`.
 
 ## Root derivation
 

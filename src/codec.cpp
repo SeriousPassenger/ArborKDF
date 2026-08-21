@@ -22,6 +22,27 @@ std::uint8_t decode_hex_digit(const char character) {
         "hex input must contain only digits 0-9, a-f, or A-F");
 }
 
+std::uint8_t decode_base64_digit(const char character) {
+    if (character >= 'A' && character <= 'Z') {
+        return static_cast<std::uint8_t>(character - 'A');
+    }
+    if (character >= 'a' && character <= 'z') {
+        return static_cast<std::uint8_t>(26 + (character - 'a'));
+    }
+    if (character >= '0' && character <= '9') {
+        return static_cast<std::uint8_t>(52 + (character - '0'));
+    }
+    if (character == '+') {
+        return UINT8_C(62);
+    }
+    if (character == '/') {
+        return UINT8_C(63);
+    }
+    throw CodecError(
+        "base64 input must use only the RFC 4648 standard alphabet and "
+        "canonical '=' padding");
+}
+
 bool is_continuation(const std::uint8_t byte) noexcept {
     return byte >= UINT8_C(0x80) && byte <= UINT8_C(0xbf);
 }
@@ -39,6 +60,13 @@ Bytes decode_hex(const std::string_view encoded,
     if ((encoded.size() % 2U) != 0U) {
         throw CodecError(
             "hex input must contain an even number of characters (whole bytes)");
+    }
+
+    // Validate before allocating the decoded buffer. In particular, callers
+    // that treat the result as sensitive never leave a partially decoded
+    // prefix behind after malformed input.
+    for (const char character : encoded) {
+        static_cast<void>(decode_hex_digit(character));
     }
 
     Bytes decoded;
@@ -123,6 +151,81 @@ std::string encode_base64(const Bytes& bytes) {
     }
 
     return encoded;
+}
+
+Bytes decode_base64(const std::string_view encoded,
+                    const std::size_t maximum_characters) {
+    if (encoded.size() > maximum_characters) {
+        std::ostringstream message;
+        message << "base64 input is " << encoded.size()
+                << " characters; maximum is " << maximum_characters;
+        throw CodecError(message.str());
+    }
+    if (encoded.empty()) {
+        return {};
+    }
+    if ((encoded.size() % 4U) != 0U) {
+        throw CodecError(
+            "base64 input length must be a multiple of 4 with canonical padding");
+    }
+
+    const std::size_t first_padding = encoded.find('=');
+    std::size_t padding = 0U;
+    if (first_padding != std::string_view::npos) {
+        padding = encoded.size() - first_padding;
+        if ((padding != 1U && padding != 2U) || first_padding < 2U) {
+            throw CodecError("base64 input has non-canonical padding");
+        }
+    }
+
+    const std::size_t data_characters = encoded.size() - padding;
+    for (std::size_t index = 0U; index < data_characters; ++index) {
+        static_cast<void>(decode_base64_digit(encoded[index]));
+    }
+    for (std::size_t index = data_characters; index < encoded.size(); ++index) {
+        if (encoded[index] != '=') {
+            throw CodecError("base64 input has non-canonical padding");
+        }
+    }
+
+    if (padding == 2U) {
+        const std::uint8_t final_sextet =
+            decode_base64_digit(encoded[encoded.size() - 3U]);
+        if ((final_sextet & UINT8_C(0x0f)) != 0U) {
+            throw CodecError("base64 input has non-canonical non-zero tail bits");
+        }
+    } else if (padding == 1U) {
+        const std::uint8_t final_sextet =
+            decode_base64_digit(encoded[encoded.size() - 2U]);
+        if ((final_sextet & UINT8_C(0x03)) != 0U) {
+            throw CodecError("base64 input has non-canonical non-zero tail bits");
+        }
+    }
+
+    const std::size_t decoded_size = (encoded.size() / 4U) * 3U - padding;
+    Bytes decoded;
+    decoded.reserve(decoded_size);
+    for (std::size_t offset = 0U; offset < encoded.size(); offset += 4U) {
+        const std::uint32_t first = decode_base64_digit(encoded[offset]);
+        const std::uint32_t second = decode_base64_digit(encoded[offset + 1U]);
+        const std::uint32_t third = encoded[offset + 2U] == '='
+                                        ? 0U
+                                        : decode_base64_digit(encoded[offset + 2U]);
+        const std::uint32_t fourth = encoded[offset + 3U] == '='
+                                         ? 0U
+                                         : decode_base64_digit(encoded[offset + 3U]);
+        const std::uint32_t block =
+            (first << 18U) | (second << 12U) | (third << 6U) | fourth;
+        decoded.push_back(static_cast<std::uint8_t>(block >> 16U));
+        if (decoded.size() < decoded_size) {
+            decoded.push_back(
+                static_cast<std::uint8_t>((block >> 8U) & UINT32_C(0xff)));
+        }
+        if (decoded.size() < decoded_size) {
+            decoded.push_back(static_cast<std::uint8_t>(block & UINT32_C(0xff)));
+        }
+    }
+    return decoded;
 }
 
 bool is_valid_utf8(const std::string_view text) noexcept {
