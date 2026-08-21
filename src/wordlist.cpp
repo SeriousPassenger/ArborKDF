@@ -5,6 +5,8 @@
 
 #include "arborkdf/codec.hpp"
 
+#include <openssl/crypto.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -152,15 +154,438 @@ bool is_forbidden_ascii_word_byte(const unsigned char byte) noexcept {
     return byte <= 0x20U || byte == 0x7fU;
 }
 
-bool contains_c1_control(const std::string_view text) noexcept {
-    for (std::size_t offset = 0U; (offset + 1U) < text.size(); ++offset) {
-        const auto first = static_cast<unsigned char>(text[offset]);
-        const auto second = static_cast<unsigned char>(text[offset + 1U]);
-        if (first == 0xc2U && second >= 0x80U && second <= 0x9fU) {
+struct CodePointRange final {
+    std::uint32_t first;
+    std::uint32_t last;
+};
+
+template <std::size_t Size>
+bool code_point_in_ranges(
+    const std::uint32_t code_point,
+    const std::array<CodePointRange, Size>& ranges) noexcept {
+    std::size_t lower = 0U;
+    std::size_t upper = ranges.size();
+    while (lower < upper) {
+        const std::size_t middle = lower + ((upper - lower) / 2U);
+        if (code_point < ranges[middle].first) {
+            upper = middle;
+        } else if (code_point > ranges[middle].last) {
+            lower = middle + 1U;
+        } else {
             return true;
         }
     }
     return false;
+}
+
+std::uint32_t decode_valid_utf8_code_point(
+    const std::string_view text, std::size_t& offset) noexcept {
+    const auto first = static_cast<std::uint8_t>(text[offset]);
+    if (first <= UINT8_C(0x7f)) {
+        ++offset;
+        return first;
+    }
+
+    std::size_t length = 0U;
+    std::uint32_t code_point = 0U;
+    if (first <= UINT8_C(0xdf)) {
+        length = 2U;
+        code_point = static_cast<std::uint32_t>(first & UINT8_C(0x1f));
+    } else if (first <= UINT8_C(0xef)) {
+        length = 3U;
+        code_point = static_cast<std::uint32_t>(first & UINT8_C(0x0f));
+    } else {
+        length = 4U;
+        code_point = static_cast<std::uint32_t>(first & UINT8_C(0x07));
+    }
+    for (std::size_t index = 1U; index < length; ++index) {
+        const auto continuation =
+            static_cast<std::uint8_t>(text[offset + index]);
+        code_point = (code_point << 6U) |
+                     static_cast<std::uint32_t>(continuation & UINT8_C(0x3f));
+    }
+    offset += length;
+    return code_point;
+}
+
+bool is_unicode_control_or_format(const std::uint32_t code_point) noexcept {
+    // Unicode 16.0 General_Category Cc and Cf ranges. This covers C0/C1,
+    // directional overrides/isolates, zero-width format characters, tags, and
+    // interlinear annotations. Variation selectors are rejected as marks below.
+    static constexpr std::array<CodePointRange, 23U> ranges{{
+        {UINT32_C(0x0000), UINT32_C(0x001f)},
+        {UINT32_C(0x007f), UINT32_C(0x009f)},
+        {UINT32_C(0x00ad), UINT32_C(0x00ad)},
+        {UINT32_C(0x0600), UINT32_C(0x0605)},
+        {UINT32_C(0x061c), UINT32_C(0x061c)},
+        {UINT32_C(0x06dd), UINT32_C(0x06dd)},
+        {UINT32_C(0x070f), UINT32_C(0x070f)},
+        {UINT32_C(0x0890), UINT32_C(0x0891)},
+        {UINT32_C(0x08e2), UINT32_C(0x08e2)},
+        {UINT32_C(0x180e), UINT32_C(0x180e)},
+        {UINT32_C(0x200b), UINT32_C(0x200f)},
+        {UINT32_C(0x202a), UINT32_C(0x202e)},
+        {UINT32_C(0x2060), UINT32_C(0x2064)},
+        {UINT32_C(0x2066), UINT32_C(0x206f)},
+        {UINT32_C(0xfeff), UINT32_C(0xfeff)},
+        {UINT32_C(0xfff9), UINT32_C(0xfffb)},
+        {UINT32_C(0x110bd), UINT32_C(0x110bd)},
+        {UINT32_C(0x110cd), UINT32_C(0x110cd)},
+        {UINT32_C(0x13430), UINT32_C(0x1343f)},
+        {UINT32_C(0x1bca0), UINT32_C(0x1bca3)},
+        {UINT32_C(0x1d173), UINT32_C(0x1d17a)},
+        {UINT32_C(0xe0001), UINT32_C(0xe0001)},
+        {UINT32_C(0xe0020), UINT32_C(0xe007f)},
+    }};
+    return code_point_in_ranges(code_point, ranges);
+}
+
+bool is_unicode_separator(const std::uint32_t code_point) noexcept {
+    return code_point == UINT32_C(0x00a0) ||
+           code_point == UINT32_C(0x1680) ||
+           (code_point >= UINT32_C(0x2000) &&
+            code_point <= UINT32_C(0x200a)) ||
+           (code_point >= UINT32_C(0x2028) &&
+            code_point <= UINT32_C(0x2029)) ||
+           code_point == UINT32_C(0x202f) ||
+           code_point == UINT32_C(0x205f) ||
+           code_point == UINT32_C(0x3000);
+}
+
+bool is_unicode_noncharacter(const std::uint32_t code_point) noexcept {
+    return (code_point >= UINT32_C(0xfdd0) &&
+            code_point <= UINT32_C(0xfdef)) ||
+           (code_point & UINT32_C(0xfffe)) == UINT32_C(0xfffe);
+}
+
+bool is_unicode_combining_mark(const std::uint32_t code_point) noexcept {
+    // Unicode 16.0 General_Category Mn, Mc, and Me ranges. Rejecting
+    // marks enforces the custom-list policy without pretending that this
+    // implementation can normalize arbitrary Unicode safely.
+    static constexpr std::array<CodePointRange, 321U> ranges{{
+        {UINT32_C(0x0300), UINT32_C(0x036f)},
+        {UINT32_C(0x0483), UINT32_C(0x0489)},
+        {UINT32_C(0x0591), UINT32_C(0x05bd)},
+        {UINT32_C(0x05bf), UINT32_C(0x05bf)},
+        {UINT32_C(0x05c1), UINT32_C(0x05c2)},
+        {UINT32_C(0x05c4), UINT32_C(0x05c5)},
+        {UINT32_C(0x05c7), UINT32_C(0x05c7)},
+        {UINT32_C(0x0610), UINT32_C(0x061a)},
+        {UINT32_C(0x064b), UINT32_C(0x065f)},
+        {UINT32_C(0x0670), UINT32_C(0x0670)},
+        {UINT32_C(0x06d6), UINT32_C(0x06dc)},
+        {UINT32_C(0x06df), UINT32_C(0x06e4)},
+        {UINT32_C(0x06e7), UINT32_C(0x06e8)},
+        {UINT32_C(0x06ea), UINT32_C(0x06ed)},
+        {UINT32_C(0x0711), UINT32_C(0x0711)},
+        {UINT32_C(0x0730), UINT32_C(0x074a)},
+        {UINT32_C(0x07a6), UINT32_C(0x07b0)},
+        {UINT32_C(0x07eb), UINT32_C(0x07f3)},
+        {UINT32_C(0x07fd), UINT32_C(0x07fd)},
+        {UINT32_C(0x0816), UINT32_C(0x0819)},
+        {UINT32_C(0x081b), UINT32_C(0x0823)},
+        {UINT32_C(0x0825), UINT32_C(0x0827)},
+        {UINT32_C(0x0829), UINT32_C(0x082d)},
+        {UINT32_C(0x0859), UINT32_C(0x085b)},
+        {UINT32_C(0x0897), UINT32_C(0x089f)},
+        {UINT32_C(0x08ca), UINT32_C(0x08e1)},
+        {UINT32_C(0x08e3), UINT32_C(0x0903)},
+        {UINT32_C(0x093a), UINT32_C(0x093c)},
+        {UINT32_C(0x093e), UINT32_C(0x094f)},
+        {UINT32_C(0x0951), UINT32_C(0x0957)},
+        {UINT32_C(0x0962), UINT32_C(0x0963)},
+        {UINT32_C(0x0981), UINT32_C(0x0983)},
+        {UINT32_C(0x09bc), UINT32_C(0x09bc)},
+        {UINT32_C(0x09be), UINT32_C(0x09c4)},
+        {UINT32_C(0x09c7), UINT32_C(0x09c8)},
+        {UINT32_C(0x09cb), UINT32_C(0x09cd)},
+        {UINT32_C(0x09d7), UINT32_C(0x09d7)},
+        {UINT32_C(0x09e2), UINT32_C(0x09e3)},
+        {UINT32_C(0x09fe), UINT32_C(0x09fe)},
+        {UINT32_C(0x0a01), UINT32_C(0x0a03)},
+        {UINT32_C(0x0a3c), UINT32_C(0x0a3c)},
+        {UINT32_C(0x0a3e), UINT32_C(0x0a42)},
+        {UINT32_C(0x0a47), UINT32_C(0x0a48)},
+        {UINT32_C(0x0a4b), UINT32_C(0x0a4d)},
+        {UINT32_C(0x0a51), UINT32_C(0x0a51)},
+        {UINT32_C(0x0a70), UINT32_C(0x0a71)},
+        {UINT32_C(0x0a75), UINT32_C(0x0a75)},
+        {UINT32_C(0x0a81), UINT32_C(0x0a83)},
+        {UINT32_C(0x0abc), UINT32_C(0x0abc)},
+        {UINT32_C(0x0abe), UINT32_C(0x0ac5)},
+        {UINT32_C(0x0ac7), UINT32_C(0x0ac9)},
+        {UINT32_C(0x0acb), UINT32_C(0x0acd)},
+        {UINT32_C(0x0ae2), UINT32_C(0x0ae3)},
+        {UINT32_C(0x0afa), UINT32_C(0x0aff)},
+        {UINT32_C(0x0b01), UINT32_C(0x0b03)},
+        {UINT32_C(0x0b3c), UINT32_C(0x0b3c)},
+        {UINT32_C(0x0b3e), UINT32_C(0x0b44)},
+        {UINT32_C(0x0b47), UINT32_C(0x0b48)},
+        {UINT32_C(0x0b4b), UINT32_C(0x0b4d)},
+        {UINT32_C(0x0b55), UINT32_C(0x0b57)},
+        {UINT32_C(0x0b62), UINT32_C(0x0b63)},
+        {UINT32_C(0x0b82), UINT32_C(0x0b82)},
+        {UINT32_C(0x0bbe), UINT32_C(0x0bc2)},
+        {UINT32_C(0x0bc6), UINT32_C(0x0bc8)},
+        {UINT32_C(0x0bca), UINT32_C(0x0bcd)},
+        {UINT32_C(0x0bd7), UINT32_C(0x0bd7)},
+        {UINT32_C(0x0c00), UINT32_C(0x0c04)},
+        {UINT32_C(0x0c3c), UINT32_C(0x0c3c)},
+        {UINT32_C(0x0c3e), UINT32_C(0x0c44)},
+        {UINT32_C(0x0c46), UINT32_C(0x0c48)},
+        {UINT32_C(0x0c4a), UINT32_C(0x0c4d)},
+        {UINT32_C(0x0c55), UINT32_C(0x0c56)},
+        {UINT32_C(0x0c62), UINT32_C(0x0c63)},
+        {UINT32_C(0x0c81), UINT32_C(0x0c83)},
+        {UINT32_C(0x0cbc), UINT32_C(0x0cbc)},
+        {UINT32_C(0x0cbe), UINT32_C(0x0cc4)},
+        {UINT32_C(0x0cc6), UINT32_C(0x0cc8)},
+        {UINT32_C(0x0cca), UINT32_C(0x0ccd)},
+        {UINT32_C(0x0cd5), UINT32_C(0x0cd6)},
+        {UINT32_C(0x0ce2), UINT32_C(0x0ce3)},
+        {UINT32_C(0x0cf3), UINT32_C(0x0cf3)},
+        {UINT32_C(0x0d00), UINT32_C(0x0d03)},
+        {UINT32_C(0x0d3b), UINT32_C(0x0d3c)},
+        {UINT32_C(0x0d3e), UINT32_C(0x0d44)},
+        {UINT32_C(0x0d46), UINT32_C(0x0d48)},
+        {UINT32_C(0x0d4a), UINT32_C(0x0d4d)},
+        {UINT32_C(0x0d57), UINT32_C(0x0d57)},
+        {UINT32_C(0x0d62), UINT32_C(0x0d63)},
+        {UINT32_C(0x0d81), UINT32_C(0x0d83)},
+        {UINT32_C(0x0dca), UINT32_C(0x0dca)},
+        {UINT32_C(0x0dcf), UINT32_C(0x0dd4)},
+        {UINT32_C(0x0dd6), UINT32_C(0x0dd6)},
+        {UINT32_C(0x0dd8), UINT32_C(0x0ddf)},
+        {UINT32_C(0x0df2), UINT32_C(0x0df3)},
+        {UINT32_C(0x0e31), UINT32_C(0x0e31)},
+        {UINT32_C(0x0e34), UINT32_C(0x0e3a)},
+        {UINT32_C(0x0e47), UINT32_C(0x0e4e)},
+        {UINT32_C(0x0eb1), UINT32_C(0x0eb1)},
+        {UINT32_C(0x0eb4), UINT32_C(0x0ebc)},
+        {UINT32_C(0x0ec8), UINT32_C(0x0ece)},
+        {UINT32_C(0x0f18), UINT32_C(0x0f19)},
+        {UINT32_C(0x0f35), UINT32_C(0x0f35)},
+        {UINT32_C(0x0f37), UINT32_C(0x0f37)},
+        {UINT32_C(0x0f39), UINT32_C(0x0f39)},
+        {UINT32_C(0x0f3e), UINT32_C(0x0f3f)},
+        {UINT32_C(0x0f71), UINT32_C(0x0f84)},
+        {UINT32_C(0x0f86), UINT32_C(0x0f87)},
+        {UINT32_C(0x0f8d), UINT32_C(0x0f97)},
+        {UINT32_C(0x0f99), UINT32_C(0x0fbc)},
+        {UINT32_C(0x0fc6), UINT32_C(0x0fc6)},
+        {UINT32_C(0x102b), UINT32_C(0x103e)},
+        {UINT32_C(0x1056), UINT32_C(0x1059)},
+        {UINT32_C(0x105e), UINT32_C(0x1060)},
+        {UINT32_C(0x1062), UINT32_C(0x1064)},
+        {UINT32_C(0x1067), UINT32_C(0x106d)},
+        {UINT32_C(0x1071), UINT32_C(0x1074)},
+        {UINT32_C(0x1082), UINT32_C(0x108d)},
+        {UINT32_C(0x108f), UINT32_C(0x108f)},
+        {UINT32_C(0x109a), UINT32_C(0x109d)},
+        {UINT32_C(0x135d), UINT32_C(0x135f)},
+        {UINT32_C(0x1712), UINT32_C(0x1715)},
+        {UINT32_C(0x1732), UINT32_C(0x1734)},
+        {UINT32_C(0x1752), UINT32_C(0x1753)},
+        {UINT32_C(0x1772), UINT32_C(0x1773)},
+        {UINT32_C(0x17b4), UINT32_C(0x17d3)},
+        {UINT32_C(0x17dd), UINT32_C(0x17dd)},
+        {UINT32_C(0x180b), UINT32_C(0x180d)},
+        {UINT32_C(0x180f), UINT32_C(0x180f)},
+        {UINT32_C(0x1885), UINT32_C(0x1886)},
+        {UINT32_C(0x18a9), UINT32_C(0x18a9)},
+        {UINT32_C(0x1920), UINT32_C(0x192b)},
+        {UINT32_C(0x1930), UINT32_C(0x193b)},
+        {UINT32_C(0x1a17), UINT32_C(0x1a1b)},
+        {UINT32_C(0x1a55), UINT32_C(0x1a5e)},
+        {UINT32_C(0x1a60), UINT32_C(0x1a7c)},
+        {UINT32_C(0x1a7f), UINT32_C(0x1a7f)},
+        {UINT32_C(0x1ab0), UINT32_C(0x1ace)},
+        {UINT32_C(0x1b00), UINT32_C(0x1b04)},
+        {UINT32_C(0x1b34), UINT32_C(0x1b44)},
+        {UINT32_C(0x1b6b), UINT32_C(0x1b73)},
+        {UINT32_C(0x1b80), UINT32_C(0x1b82)},
+        {UINT32_C(0x1ba1), UINT32_C(0x1bad)},
+        {UINT32_C(0x1be6), UINT32_C(0x1bf3)},
+        {UINT32_C(0x1c24), UINT32_C(0x1c37)},
+        {UINT32_C(0x1cd0), UINT32_C(0x1cd2)},
+        {UINT32_C(0x1cd4), UINT32_C(0x1ce8)},
+        {UINT32_C(0x1ced), UINT32_C(0x1ced)},
+        {UINT32_C(0x1cf4), UINT32_C(0x1cf4)},
+        {UINT32_C(0x1cf7), UINT32_C(0x1cf9)},
+        {UINT32_C(0x1dc0), UINT32_C(0x1dff)},
+        {UINT32_C(0x20d0), UINT32_C(0x20f0)},
+        {UINT32_C(0x2cef), UINT32_C(0x2cf1)},
+        {UINT32_C(0x2d7f), UINT32_C(0x2d7f)},
+        {UINT32_C(0x2de0), UINT32_C(0x2dff)},
+        {UINT32_C(0x302a), UINT32_C(0x302f)},
+        {UINT32_C(0x3099), UINT32_C(0x309a)},
+        {UINT32_C(0xa66f), UINT32_C(0xa672)},
+        {UINT32_C(0xa674), UINT32_C(0xa67d)},
+        {UINT32_C(0xa69e), UINT32_C(0xa69f)},
+        {UINT32_C(0xa6f0), UINT32_C(0xa6f1)},
+        {UINT32_C(0xa802), UINT32_C(0xa802)},
+        {UINT32_C(0xa806), UINT32_C(0xa806)},
+        {UINT32_C(0xa80b), UINT32_C(0xa80b)},
+        {UINT32_C(0xa823), UINT32_C(0xa827)},
+        {UINT32_C(0xa82c), UINT32_C(0xa82c)},
+        {UINT32_C(0xa880), UINT32_C(0xa881)},
+        {UINT32_C(0xa8b4), UINT32_C(0xa8c5)},
+        {UINT32_C(0xa8e0), UINT32_C(0xa8f1)},
+        {UINT32_C(0xa8ff), UINT32_C(0xa8ff)},
+        {UINT32_C(0xa926), UINT32_C(0xa92d)},
+        {UINT32_C(0xa947), UINT32_C(0xa953)},
+        {UINT32_C(0xa980), UINT32_C(0xa983)},
+        {UINT32_C(0xa9b3), UINT32_C(0xa9c0)},
+        {UINT32_C(0xa9e5), UINT32_C(0xa9e5)},
+        {UINT32_C(0xaa29), UINT32_C(0xaa36)},
+        {UINT32_C(0xaa43), UINT32_C(0xaa43)},
+        {UINT32_C(0xaa4c), UINT32_C(0xaa4d)},
+        {UINT32_C(0xaa7b), UINT32_C(0xaa7d)},
+        {UINT32_C(0xaab0), UINT32_C(0xaab0)},
+        {UINT32_C(0xaab2), UINT32_C(0xaab4)},
+        {UINT32_C(0xaab7), UINT32_C(0xaab8)},
+        {UINT32_C(0xaabe), UINT32_C(0xaabf)},
+        {UINT32_C(0xaac1), UINT32_C(0xaac1)},
+        {UINT32_C(0xaaeb), UINT32_C(0xaaef)},
+        {UINT32_C(0xaaf5), UINT32_C(0xaaf6)},
+        {UINT32_C(0xabe3), UINT32_C(0xabea)},
+        {UINT32_C(0xabec), UINT32_C(0xabed)},
+        {UINT32_C(0xfb1e), UINT32_C(0xfb1e)},
+        {UINT32_C(0xfe00), UINT32_C(0xfe0f)},
+        {UINT32_C(0xfe20), UINT32_C(0xfe2f)},
+        {UINT32_C(0x101fd), UINT32_C(0x101fd)},
+        {UINT32_C(0x102e0), UINT32_C(0x102e0)},
+        {UINT32_C(0x10376), UINT32_C(0x1037a)},
+        {UINT32_C(0x10a01), UINT32_C(0x10a03)},
+        {UINT32_C(0x10a05), UINT32_C(0x10a06)},
+        {UINT32_C(0x10a0c), UINT32_C(0x10a0f)},
+        {UINT32_C(0x10a38), UINT32_C(0x10a3a)},
+        {UINT32_C(0x10a3f), UINT32_C(0x10a3f)},
+        {UINT32_C(0x10ae5), UINT32_C(0x10ae6)},
+        {UINT32_C(0x10d24), UINT32_C(0x10d27)},
+        {UINT32_C(0x10d69), UINT32_C(0x10d6d)},
+        {UINT32_C(0x10eab), UINT32_C(0x10eac)},
+        {UINT32_C(0x10efc), UINT32_C(0x10eff)},
+        {UINT32_C(0x10f46), UINT32_C(0x10f50)},
+        {UINT32_C(0x10f82), UINT32_C(0x10f85)},
+        {UINT32_C(0x11000), UINT32_C(0x11002)},
+        {UINT32_C(0x11038), UINT32_C(0x11046)},
+        {UINT32_C(0x11070), UINT32_C(0x11070)},
+        {UINT32_C(0x11073), UINT32_C(0x11074)},
+        {UINT32_C(0x1107f), UINT32_C(0x11082)},
+        {UINT32_C(0x110b0), UINT32_C(0x110ba)},
+        {UINT32_C(0x110c2), UINT32_C(0x110c2)},
+        {UINT32_C(0x11100), UINT32_C(0x11102)},
+        {UINT32_C(0x11127), UINT32_C(0x11134)},
+        {UINT32_C(0x11145), UINT32_C(0x11146)},
+        {UINT32_C(0x11173), UINT32_C(0x11173)},
+        {UINT32_C(0x11180), UINT32_C(0x11182)},
+        {UINT32_C(0x111b3), UINT32_C(0x111c0)},
+        {UINT32_C(0x111c9), UINT32_C(0x111cc)},
+        {UINT32_C(0x111ce), UINT32_C(0x111cf)},
+        {UINT32_C(0x1122c), UINT32_C(0x11237)},
+        {UINT32_C(0x1123e), UINT32_C(0x1123e)},
+        {UINT32_C(0x11241), UINT32_C(0x11241)},
+        {UINT32_C(0x112df), UINT32_C(0x112ea)},
+        {UINT32_C(0x11300), UINT32_C(0x11303)},
+        {UINT32_C(0x1133b), UINT32_C(0x1133c)},
+        {UINT32_C(0x1133e), UINT32_C(0x11344)},
+        {UINT32_C(0x11347), UINT32_C(0x11348)},
+        {UINT32_C(0x1134b), UINT32_C(0x1134d)},
+        {UINT32_C(0x11357), UINT32_C(0x11357)},
+        {UINT32_C(0x11362), UINT32_C(0x11363)},
+        {UINT32_C(0x11366), UINT32_C(0x1136c)},
+        {UINT32_C(0x11370), UINT32_C(0x11374)},
+        {UINT32_C(0x113b8), UINT32_C(0x113c0)},
+        {UINT32_C(0x113c2), UINT32_C(0x113c2)},
+        {UINT32_C(0x113c5), UINT32_C(0x113c5)},
+        {UINT32_C(0x113c7), UINT32_C(0x113ca)},
+        {UINT32_C(0x113cc), UINT32_C(0x113d0)},
+        {UINT32_C(0x113d2), UINT32_C(0x113d2)},
+        {UINT32_C(0x113e1), UINT32_C(0x113e2)},
+        {UINT32_C(0x11435), UINT32_C(0x11446)},
+        {UINT32_C(0x1145e), UINT32_C(0x1145e)},
+        {UINT32_C(0x114b0), UINT32_C(0x114c3)},
+        {UINT32_C(0x115af), UINT32_C(0x115b5)},
+        {UINT32_C(0x115b8), UINT32_C(0x115c0)},
+        {UINT32_C(0x115dc), UINT32_C(0x115dd)},
+        {UINT32_C(0x11630), UINT32_C(0x11640)},
+        {UINT32_C(0x116ab), UINT32_C(0x116b7)},
+        {UINT32_C(0x1171d), UINT32_C(0x1172b)},
+        {UINT32_C(0x1182c), UINT32_C(0x1183a)},
+        {UINT32_C(0x11930), UINT32_C(0x11935)},
+        {UINT32_C(0x11937), UINT32_C(0x11938)},
+        {UINT32_C(0x1193b), UINT32_C(0x1193e)},
+        {UINT32_C(0x11940), UINT32_C(0x11940)},
+        {UINT32_C(0x11942), UINT32_C(0x11943)},
+        {UINT32_C(0x119d1), UINT32_C(0x119d7)},
+        {UINT32_C(0x119da), UINT32_C(0x119e0)},
+        {UINT32_C(0x119e4), UINT32_C(0x119e4)},
+        {UINT32_C(0x11a01), UINT32_C(0x11a0a)},
+        {UINT32_C(0x11a33), UINT32_C(0x11a39)},
+        {UINT32_C(0x11a3b), UINT32_C(0x11a3e)},
+        {UINT32_C(0x11a47), UINT32_C(0x11a47)},
+        {UINT32_C(0x11a51), UINT32_C(0x11a5b)},
+        {UINT32_C(0x11a8a), UINT32_C(0x11a99)},
+        {UINT32_C(0x11c2f), UINT32_C(0x11c36)},
+        {UINT32_C(0x11c38), UINT32_C(0x11c3f)},
+        {UINT32_C(0x11c92), UINT32_C(0x11ca7)},
+        {UINT32_C(0x11ca9), UINT32_C(0x11cb6)},
+        {UINT32_C(0x11d31), UINT32_C(0x11d36)},
+        {UINT32_C(0x11d3a), UINT32_C(0x11d3a)},
+        {UINT32_C(0x11d3c), UINT32_C(0x11d3d)},
+        {UINT32_C(0x11d3f), UINT32_C(0x11d45)},
+        {UINT32_C(0x11d47), UINT32_C(0x11d47)},
+        {UINT32_C(0x11d8a), UINT32_C(0x11d8e)},
+        {UINT32_C(0x11d90), UINT32_C(0x11d91)},
+        {UINT32_C(0x11d93), UINT32_C(0x11d97)},
+        {UINT32_C(0x11ef3), UINT32_C(0x11ef6)},
+        {UINT32_C(0x11f00), UINT32_C(0x11f01)},
+        {UINT32_C(0x11f03), UINT32_C(0x11f03)},
+        {UINT32_C(0x11f34), UINT32_C(0x11f3a)},
+        {UINT32_C(0x11f3e), UINT32_C(0x11f42)},
+        {UINT32_C(0x11f5a), UINT32_C(0x11f5a)},
+        {UINT32_C(0x13440), UINT32_C(0x13440)},
+        {UINT32_C(0x13447), UINT32_C(0x13455)},
+        {UINT32_C(0x1611e), UINT32_C(0x1612f)},
+        {UINT32_C(0x16af0), UINT32_C(0x16af4)},
+        {UINT32_C(0x16b30), UINT32_C(0x16b36)},
+        {UINT32_C(0x16f4f), UINT32_C(0x16f4f)},
+        {UINT32_C(0x16f51), UINT32_C(0x16f87)},
+        {UINT32_C(0x16f8f), UINT32_C(0x16f92)},
+        {UINT32_C(0x16fe4), UINT32_C(0x16fe4)},
+        {UINT32_C(0x16ff0), UINT32_C(0x16ff1)},
+        {UINT32_C(0x1bc9d), UINT32_C(0x1bc9e)},
+        {UINT32_C(0x1cf00), UINT32_C(0x1cf2d)},
+        {UINT32_C(0x1cf30), UINT32_C(0x1cf46)},
+        {UINT32_C(0x1d165), UINT32_C(0x1d169)},
+        {UINT32_C(0x1d16d), UINT32_C(0x1d172)},
+        {UINT32_C(0x1d17b), UINT32_C(0x1d182)},
+        {UINT32_C(0x1d185), UINT32_C(0x1d18b)},
+        {UINT32_C(0x1d1aa), UINT32_C(0x1d1ad)},
+        {UINT32_C(0x1d242), UINT32_C(0x1d244)},
+        {UINT32_C(0x1da00), UINT32_C(0x1da36)},
+        {UINT32_C(0x1da3b), UINT32_C(0x1da6c)},
+        {UINT32_C(0x1da75), UINT32_C(0x1da75)},
+        {UINT32_C(0x1da84), UINT32_C(0x1da84)},
+        {UINT32_C(0x1da9b), UINT32_C(0x1da9f)},
+        {UINT32_C(0x1daa1), UINT32_C(0x1daaf)},
+        {UINT32_C(0x1e000), UINT32_C(0x1e006)},
+        {UINT32_C(0x1e008), UINT32_C(0x1e018)},
+        {UINT32_C(0x1e01b), UINT32_C(0x1e021)},
+        {UINT32_C(0x1e023), UINT32_C(0x1e024)},
+        {UINT32_C(0x1e026), UINT32_C(0x1e02a)},
+        {UINT32_C(0x1e08f), UINT32_C(0x1e08f)},
+        {UINT32_C(0x1e130), UINT32_C(0x1e136)},
+        {UINT32_C(0x1e2ae), UINT32_C(0x1e2ae)},
+        {UINT32_C(0x1e2ec), UINT32_C(0x1e2ef)},
+        {UINT32_C(0x1e4ec), UINT32_C(0x1e4ef)},
+        {UINT32_C(0x1e5ee), UINT32_C(0x1e5ef)},
+        {UINT32_C(0x1e8d0), UINT32_C(0x1e8d6)},
+        {UINT32_C(0x1e944), UINT32_C(0x1e94a)},
+        {UINT32_C(0xe0100), UINT32_C(0xe01ef)},
+    }};
+    return code_point_in_ranges(code_point, ranges);
 }
 
 void validate_word(const std::string_view word, const std::string& source_name,
@@ -178,15 +603,38 @@ void validate_word(const std::string_view word, const std::string& source_name,
     if (contains_utf8_bom(word)) {
         throw WordlistError(where + ": UTF-8 BOM (U+FEFF) is not allowed");
     }
-    if (contains_c1_control(word)) {
-        throw WordlistError(where + ": Unicode control characters are not allowed");
-    }
     for (const char character : word) {
         const auto byte = static_cast<unsigned char>(character);
         if (is_forbidden_ascii_word_byte(byte)) {
             throw WordlistError(
                 where +
                 ": words may not contain ASCII whitespace or control bytes");
+        }
+    }
+
+    std::size_t offset = 0U;
+    while (offset < word.size()) {
+        const std::uint32_t code_point =
+            decode_valid_utf8_code_point(word, offset);
+        if (is_unicode_control_or_format(code_point)) {
+            throw WordlistError(
+                where +
+                ": Unicode control characters and format characters are not "
+                "allowed");
+        }
+        if (is_unicode_separator(code_point)) {
+            throw WordlistError(
+                where + ": Unicode separator characters are not allowed");
+        }
+        if (is_unicode_noncharacter(code_point)) {
+            throw WordlistError(where +
+                                ": Unicode noncharacters are not allowed");
+        }
+        if (is_unicode_combining_mark(code_point)) {
+            throw WordlistError(
+                where +
+                ": combining marks are not allowed; use exact precomposed "
+                "Unicode characters");
         }
     }
 }
@@ -404,12 +852,109 @@ std::size_t checked_bit_length(const Bytes& input) {
     return input.size() * 8U;
 }
 
+class SensitiveIndicesGuard final {
+  public:
+    explicit SensitiveIndicesGuard(
+        std::vector<std::size_t>& value) noexcept
+        : value_(value) {}
+
+    ~SensitiveIndicesGuard() {
+        if (active_ && !value_.empty()) {
+            OPENSSL_cleanse(value_.data(),
+                            value_.size() * sizeof(value_[0]));
+            value_.clear();
+        }
+    }
+
+    void release() noexcept { active_ = false; }
+
+    SensitiveIndicesGuard(const SensitiveIndicesGuard&) = delete;
+    SensitiveIndicesGuard& operator=(const SensitiveIndicesGuard&) = delete;
+
+  private:
+    std::vector<std::size_t>& value_;
+    bool active_ = true;
+};
+
+class SensitiveBytesGuard final {
+  public:
+    explicit SensitiveBytesGuard(Bytes& value) noexcept : value_(value) {}
+
+    ~SensitiveBytesGuard() {
+        if (active_ && !value_.empty()) {
+            OPENSSL_cleanse(value_.data(), value_.size());
+            value_.clear();
+        }
+    }
+
+    void release() noexcept { active_ = false; }
+
+    SensitiveBytesGuard(const SensitiveBytesGuard&) = delete;
+    SensitiveBytesGuard& operator=(const SensitiveBytesGuard&) = delete;
+
+  private:
+    Bytes& value_;
+    bool active_ = true;
+};
+
+class SensitiveStringGuard final {
+  public:
+    explicit SensitiveStringGuard(std::string& value) noexcept
+        : value_(value) {}
+
+    ~SensitiveStringGuard() {
+        if (active_ && !value_.empty()) {
+            OPENSSL_cleanse(value_.data(), value_.size());
+            value_.clear();
+        }
+    }
+
+    void release() noexcept { active_ = false; }
+
+    SensitiveStringGuard(const SensitiveStringGuard&) = delete;
+    SensitiveStringGuard& operator=(const SensitiveStringGuard&) = delete;
+
+  private:
+    std::string& value_;
+    bool active_ = true;
+};
+
+class SensitiveStringsGuard final {
+  public:
+    explicit SensitiveStringsGuard(std::vector<std::string>& value) noexcept
+        : value_(value) {}
+
+    ~SensitiveStringsGuard() {
+        if (!active_) {
+            return;
+        }
+        for (std::string& word : value_) {
+            if (!word.empty()) {
+                OPENSSL_cleanse(word.data(), word.size());
+                word.clear();
+            }
+        }
+        value_.clear();
+    }
+
+    void release() noexcept { active_ = false; }
+
+    SensitiveStringsGuard(const SensitiveStringsGuard&) = delete;
+    SensitiveStringsGuard& operator=(const SensitiveStringsGuard&) = delete;
+
+  private:
+    std::vector<std::string>& value_;
+    bool active_ = true;
+};
+
+template <typename Words>
 std::vector<std::size_t> words_to_indices(
-    const std::vector<std::string>& words, const Wordlist& wordlist) {
+    const Words& words, const Wordlist& wordlist) {
     std::vector<std::size_t> indices;
+    SensitiveIndicesGuard guard(indices);
     indices.reserve(words.size());
     for (std::size_t position = 0U; position < words.size(); ++position) {
-        const std::string& word = words[position];
+        const std::string_view word(words[position]);
         const std::optional<std::size_t> index = wordlist.find_index(word);
         if (!index.has_value()) {
             throw WordlistError("word at position " +
@@ -419,10 +964,12 @@ std::vector<std::size_t> words_to_indices(
         }
         indices.push_back(*index);
     }
+    guard.release();
     return indices;
 }
 
-std::vector<std::string> split_master_phrase(const std::string_view phrase) {
+std::vector<std::string_view> split_master_phrase(
+    const std::string_view phrase) {
     if (phrase.empty()) {
         throw WordlistError("master phrase must contain at least one word");
     }
@@ -430,7 +977,9 @@ std::vector<std::string> split_master_phrase(const std::string_view phrase) {
         throw WordlistError("master phrase is not valid UTF-8");
     }
 
-    std::vector<std::string> words;
+    // Views point directly into the caller-owned master buffer. This validates
+    // the phrase grammar without making additional plaintext word copies.
+    std::vector<std::string_view> words;
     std::size_t start = 0U;
     for (std::size_t offset = 0U; offset < phrase.size(); ++offset) {
         const auto byte = static_cast<unsigned char>(phrase[offset]);
@@ -493,10 +1042,52 @@ bool frame_has_tag(const Bytes& frame) noexcept {
 
 Wordlist::Wordlist(std::vector<std::string> words, std::string source_name)
     : words_(std::move(words)), source_name_(std::move(source_name)) {
+    rebuild_indices();
+}
+
+Wordlist::Wordlist(const Wordlist& other)
+    : words_(other.words_), source_name_(other.source_name_) {
+    rebuild_indices();
+}
+
+Wordlist& Wordlist::operator=(const Wordlist& other) {
+    if (this != &other) {
+        Wordlist replacement(other);
+        swap(replacement);
+    }
+    return *this;
+}
+
+Wordlist::Wordlist(Wordlist&& other)
+    : words_(std::move(other.words_)),
+      source_name_(std::move(other.source_name_)) {
+    // The old lookup views referred to storage now owned by this object.
+    // Rebuild explicitly so correctness does not depend on container move
+    // details, and leave the moved-from object with no dangling views.
+    other.indices_.clear();
+    rebuild_indices();
+}
+
+Wordlist& Wordlist::operator=(Wordlist&& other) {
+    if (this != &other) {
+        Wordlist replacement(std::move(other));
+        swap(replacement);
+    }
+    return *this;
+}
+
+void Wordlist::rebuild_indices() {
+    indices_.clear();
     indices_.reserve(words_.size());
     for (std::size_t index = 0U; index < words_.size(); ++index) {
-        indices_.emplace(words_[index], index);
+        indices_.emplace(std::string_view(words_[index]), index);
     }
+}
+
+void Wordlist::swap(Wordlist& other) noexcept {
+    words_.swap(other.words_);
+    indices_.swap(other.indices_);
+    source_name_.swap(other.source_name_);
 }
 
 Wordlist Wordlist::from_source(const std::string& source) {
@@ -634,7 +1225,7 @@ const std::string& Wordlist::at(const std::size_t index) const {
 
 std::optional<std::size_t> Wordlist::find_index(
     const std::string_view word) const {
-    const auto found = indices_.find(std::string(word));
+    const auto found = indices_.find(word);
     if (found == indices_.end()) {
         return std::nullopt;
     }
@@ -727,6 +1318,7 @@ std::vector<std::string> encode_wordlist_bits_v1(
     const std::size_t bits_per_word = *diagnostic.bits_per_word;
     const std::size_t word_count = input_bits / bits_per_word;
     std::vector<std::string> encoded;
+    SensitiveStringsGuard encoded_guard(encoded);
     encoded.reserve(word_count);
 
     for (std::size_t word_offset = 0U; word_offset < word_count;
@@ -743,6 +1335,7 @@ std::vector<std::string> encode_wordlist_bits_v1(
         }
         encoded.push_back(wordlist.at(index));
     }
+    encoded_guard.release();
     return encoded;
 }
 
@@ -775,8 +1368,8 @@ Bytes decode_wordlist_bits_v1(const std::vector<std::string>& words,
         throw WordlistCodecError(std::move(diagnostic));
     }
 
-    const std::vector<std::size_t> indices =
-        words_to_indices(words, wordlist);
+    std::vector<std::size_t> indices = words_to_indices(words, wordlist);
+    const SensitiveIndicesGuard indices_guard(indices);
     Bytes decoded(total_bits / 8U, UINT8_C(0));
     for (std::size_t word_offset = 0U; word_offset < indices.size();
          ++word_offset) {
@@ -815,6 +1408,7 @@ std::string join_words(const std::vector<std::string>& words) {
     }
 
     std::string phrase;
+    SensitiveStringGuard phrase_guard(phrase);
     phrase.reserve(size);
     for (std::size_t index = 0U; index < words.size(); ++index) {
         if (index != 0U) {
@@ -822,7 +1416,13 @@ std::string join_words(const std::vector<std::string>& words) {
         }
         phrase += words[index];
     }
+    phrase_guard.release();
     return phrase;
+}
+
+std::string join_words(std::vector<std::string>&& words) {
+    const SensitiveStringsGuard words_guard(words);
+    return join_words(static_cast<const std::vector<std::string>&>(words));
 }
 
 std::vector<std::size_t> parse_master_phrase_indices(
@@ -836,12 +1436,27 @@ std::string format_master_phrase_indices(
         throw WordlistError("master phrase must contain at least one word");
     }
 
-    std::vector<std::string> words;
-    words.reserve(indices.size());
+    std::size_t phrase_size = indices.size() - 1U;
     for (const std::size_t index : indices) {
-        words.push_back(wordlist.at(index));
+        const std::size_t word_size = wordlist.at(index).size();
+        if (phrase_size >
+            (std::numeric_limits<std::size_t>::max() - word_size)) {
+            throw WordlistError("master phrase is too large to format");
+        }
+        phrase_size += word_size;
     }
-    return join_words(words);
+
+    std::string phrase;
+    SensitiveStringGuard phrase_guard(phrase);
+    phrase.reserve(phrase_size);
+    for (std::size_t position = 0U; position < indices.size(); ++position) {
+        if (position != 0U) {
+            phrase.push_back(' ');
+        }
+        phrase.append(wordlist.at(indices[position]));
+    }
+    phrase_guard.release();
+    return phrase;
 }
 
 Bytes frame_master_phrase_v1(const std::vector<std::size_t>& indices,
@@ -857,6 +1472,7 @@ Bytes frame_master_phrase_v1(const std::vector<std::size_t>& indices,
     }
 
     Bytes frame;
+    SensitiveBytesGuard frame_guard(frame);
     frame.reserve(kMasterPhraseFrameTag.size() + 16U +
                   (indices.size() * 8U));
     append_tag(frame);
@@ -868,13 +1484,16 @@ Bytes frame_master_phrase_v1(const std::vector<std::size_t>& indices,
         }
         append_u64_be(frame, size_as_u64(index, "word index"));
     }
+    frame_guard.release();
     return frame;
 }
 
 Bytes frame_master_phrase_v1(const std::string_view phrase,
                              const Wordlist& wordlist) {
-    return frame_master_phrase_v1(
-        parse_master_phrase_indices(phrase, wordlist), wordlist);
+    std::vector<std::size_t> indices =
+        parse_master_phrase_indices(phrase, wordlist);
+    const SensitiveIndicesGuard indices_guard(indices);
+    return frame_master_phrase_v1(indices, wordlist);
 }
 
 std::vector<std::size_t> unframe_master_phrase_v1(
@@ -915,6 +1534,7 @@ std::vector<std::size_t> unframe_master_phrase_v1(
     }
 
     std::vector<std::size_t> indices;
+    SensitiveIndicesGuard indices_guard(indices);
     indices.reserve(count);
     for (std::size_t offset = 0U; offset < count; ++offset) {
         const std::uint64_t framed_index =
@@ -931,6 +1551,7 @@ std::vector<std::size_t> unframe_master_phrase_v1(
         }
         indices.push_back(static_cast<std::size_t>(framed_index));
     }
+    indices_guard.release();
     return indices;
 }
 

@@ -141,6 +141,16 @@ entries. Each word is mapped to its zero-based line number. ArborKDF frames the
 wordlist length, word count, and indices before password hardening, so no index
 bits are discarded and non-power-of-two list lengths are supported.
 
+The `ArborKDF/master-phrase/v1` frame deliberately binds only those three
+numeric properties: list length, phrase length, and ordered indices. It does
+**not** bind the selector, source path, file digest, word spellings, or complete
+wordlist order. Consequently, supplying a different same-size list can decode
+the same numeric frame to different visible words, while the numeric frame
+itself derives the same key. The exact list and its order are therefore required
+public recovery metadata and should be backed up with a SHA-512 digest. A future
+protocol can bind a canonical list identifier or digest only under a new frame
+version; v1 recovery semantics will not be changed silently.
+
 For `W` independently and uniformly selected words from a list of `N` entries, the
 ideal code-space entropy is:
 
@@ -290,10 +300,20 @@ Wordlist order is semantic. ArborKDF rejects:
 
 - invalid UTF-8 or a UTF-8 BOM;
 - blank lines, ASCII whitespace, or C0/C1 control bytes inside an entry;
+- Unicode control/format characters, including bidi controls and zero-width
+  format characters;
+- Unicode line, paragraph, and space separators (including non-breaking space),
+  as well as Unicode noncharacters;
+- Unicode combining marks;
 - duplicate entries;
 - resource-limit violations.
 
 Only the line ending is removed. Entries are not trimmed, normalized, or
-case-folded. Other valid non-ASCII code points are treated as literal word bytes.
-The v1 implementation limits a file to 64 MiB, 1,048,576 entries, and 1,024 UTF-8
-bytes per entry.
+case-folded. ArborKDF has no Unicode normalization dependency, so custom lists
+must use exact precomposed spellings: combining-mark sequences are rejected
+rather than accepted alongside visually equivalent precomposed entries.
+Ordinary precomposed multilingual letters and visible symbols remain literal
+UTF-8 bytes. This intentionally excludes writing systems or spellings that
+require combining marks; use a stable list whose entries satisfy this policy
+instead of relying on locale-dependent normalization. The v1 implementation
+limits a file to 64 MiB, 1,048,576 entries, and 1,024 UTF-8 bytes per entry.

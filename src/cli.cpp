@@ -38,11 +38,22 @@ constexpr std::size_t kMaximumGeneratedBits = 4096U;
 constexpr std::size_t kMaximumGeneratedWords = 4096U;
 constexpr std::size_t kMaximumSaltBits = 8192U;
 constexpr std::size_t kMinimumSaltBits = 128U;
+constexpr std::size_t kMaximumHexMasterCharacters = kMaximumMasterBytes * 2U;
+constexpr std::size_t kMaximumBase64MasterCharacters =
+    ((kMaximumMasterBytes + 2U) / 3U) * 4U;
+constexpr std::size_t kMaximumBase64SaltCharacters =
+    (((kMaximumSaltBits / 8U) + 2U) / 3U) * 4U;
+
+const char* const kVersion =
+    "ArborKDF experimental-pre-release; derivation-suite=draft-v1; "
+    "random-conditioner=ArborKDF/random-conditioner/v2; "
+    "mouse-transcript=ArborKDF/mouse-transcript/v1\n";
 
 const char* const kGlobalHelp = R"HELP(ArborKDF - offline, deterministic, path-based key derivation
 
 Usage:
   arborkdf --help
+  arborkdf --version
   arborkdf subkey generate [options]
   arborkdf masterkey generate [options]
   arborkdf salt generate [options]
@@ -57,9 +68,12 @@ has no GUI, no network behavior, no color output, and no cryptographic defaults.
 
 const char* const kSubkeyHelp = R"HELP(Usage: arborkdf subkey generate [options]
 
-Required:
-  --input-encoding utf8|wordlist
-  --salt-hex HEX                 Public salt, strict hex, 16..1024 bytes
+Required unless using the legacy `--salt-hex` spelling:
+  --salt VALUE                   Public salt in the selected encoding
+  --salt-encoding hex|base64|wordlist
+
+Always required:
+  --input-encoding utf8|hex|base64|wordlist
   --path PATH                    8..64 chars from [a-z0-9+-/.@#_:]
   --pbkdf2-iterations N          No default
   --argon2-memory-kib N          No default; at least 8 * parallelism
@@ -74,13 +88,23 @@ Conditional:
                                  wordlist master input
   --output-wordlist SOURCE       Custom file or embedded selector; required for
                                  wordlist output
+  --salt-wordlist SOURCE         Required for wordlist salt input
   --master-stdin                 Read one master line from stdin instead of a
                                  hidden, twice-confirmed interactive prompt;
                                  stdin mode is deliberately single-read
 
+Compatibility:
+  --salt-hex HEX                 Legacy strict-hex spelling; cannot be combined
+                                 with --salt or --salt-encoding
+
 Run `arborkdf wordlist list` for embedded selectors. embedded_bip39 is the
 canonical English vocabulary only. ArborKDF phrases have no BIP-39 checksum and
 do not use BIP-39's mnemonic-to-seed procedure.
+
+Hex and Base64 master text are strict transport encodings of raw bytes. They
+share the versioned raw-byte master domain and therefore derive the same key
+from the same bytes; UTF-8 text uses a distinct domain. Master input is 1..4096
+decoded bytes. Public salt input is 16..1024 decoded bytes.
 
 The public salt and path are length-framed. The 128 target uses fixed-output
 KMAC256; the 256 target uses SP 800-108 counter mode with HMAC-SHA3-512.
@@ -105,10 +129,11 @@ Run `arborkdf wordlist list` for embedded selectors. embedded_bip39 is the
 canonical English vocabulary only. Generated phrases have no BIP-39 checksum
 and are not BIP-39 wallet mnemonics.
 
-OS randomness is mandatory. Move the mouse to collect supplemental input; the
-256-bit progress bar is a diagnostic minimum, can move backward, can exceed 100%,
-and stops only when Enter is pressed. Estimators are shown individually and are
-never averaged. Mouse security credit remains 0 without offline source validation.
+Linux /dev/urandom is mandatory and supplies at least 512 input bits. Move the
+mouse to add supplemental input; Enter stops collection. If the mouse diagnostic
+exceeds 512 bits, the OS input length is increased to the same byte-rounded size.
+Final OS, mouse, and combined input diagnostics are separate compact tables.
+Mouse estimates are never averaged or treated as validated security entropy.
 The generated secret alone is written to stdout.
 )HELP";
 
@@ -122,8 +147,9 @@ Conditional:
   --output-wordlist SOURCE       Custom file or embedded selector; required for
                                  wordlist output
 
-The salt is public. OS randomness is mandatory; mouse input is supplemental and
-reported with the same non-averaged diagnostic display as master-key generation.
+The salt is public. Linux /dev/urandom supplies at least 512 input bits; mouse
+input is supplemental and reported with the same three-table diagnostic display
+as master-key generation.
 )HELP";
 
 const char* const kEncodingEncodeHelp = R"HELP(Usage: arborkdf encoding encode [options]
@@ -256,25 +282,39 @@ private:
 class SensitiveBytesGuard final {
 public:
     explicit SensitiveBytesGuard(Bytes& value) noexcept : value_(value) {}
-    ~SensitiveBytesGuard() { secure_clear(value_); }
+    ~SensitiveBytesGuard() {
+        if (active_) {
+            secure_clear(value_);
+        }
+    }
 
     SensitiveBytesGuard(const SensitiveBytesGuard&) = delete;
     SensitiveBytesGuard& operator=(const SensitiveBytesGuard&) = delete;
 
+    void release() noexcept { active_ = false; }
+
 private:
     Bytes& value_;
+    bool active_{true};
 };
 
 class SensitiveStringGuard final {
 public:
     explicit SensitiveStringGuard(std::string& value) noexcept : value_(value) {}
-    ~SensitiveStringGuard() { secure_clear(value_); }
+    ~SensitiveStringGuard() {
+        if (active_) {
+            secure_clear(value_);
+        }
+    }
 
     SensitiveStringGuard(const SensitiveStringGuard&) = delete;
     SensitiveStringGuard& operator=(const SensitiveStringGuard&) = delete;
 
+    void release() noexcept { active_ = false; }
+
 private:
     std::string& value_;
+    bool active_{true};
 };
 
 class SensitiveIndicesGuard final {
@@ -282,7 +322,7 @@ public:
     explicit SensitiveIndicesGuard(std::vector<std::size_t>& value) noexcept
         : value_(value) {}
     ~SensitiveIndicesGuard() {
-        if (!value_.empty()) {
+        if (active_ && !value_.empty()) {
             OPENSSL_cleanse(value_.data(), value_.size() * sizeof(value_[0]));
         }
     }
@@ -290,8 +330,28 @@ public:
     SensitiveIndicesGuard(const SensitiveIndicesGuard&) = delete;
     SensitiveIndicesGuard& operator=(const SensitiveIndicesGuard&) = delete;
 
+    void release() noexcept { active_ = false; }
+
 private:
     std::vector<std::size_t>& value_;
+    bool active_{true};
+};
+
+class SensitiveMouseEventsGuard final {
+public:
+    explicit SensitiveMouseEventsGuard(std::vector<MouseEvent>& value) noexcept
+        : value_(value) {}
+    ~SensitiveMouseEventsGuard() {
+        if (!value_.empty()) {
+            OPENSSL_cleanse(value_.data(), value_.size() * sizeof(value_[0]));
+        }
+    }
+
+    SensitiveMouseEventsGuard(const SensitiveMouseEventsGuard&) = delete;
+    SensitiveMouseEventsGuard& operator=(const SensitiveMouseEventsGuard&) = delete;
+
+private:
+    std::vector<MouseEvent>& value_;
 };
 
 void write_stdout(const std::string_view value, const bool append_newline) {
@@ -350,6 +410,11 @@ void append_framed_string(Bytes& output, const std::string_view value) {
     output.insert(output.end(), value.begin(), value.end());
 }
 
+void append_framed_bytes(Bytes& output, const Bytes& value) {
+    append_u64_be(output, static_cast<std::uint64_t>(value.size()));
+    output.insert(output.end(), value.begin(), value.end());
+}
+
 [[nodiscard]] Bytes frame_utf8_master(const std::string_view master) {
     if (master.empty()) {
         throw Error("UTF-8 master input must not be empty");
@@ -359,10 +424,30 @@ void append_framed_string(Bytes& output, const std::string_view value) {
     }
     require_valid_utf8(master, "master input");
     Bytes output;
+    SensitiveBytesGuard output_guard(output);
     const std::string tag = "ArborKDF/master/utf8/v1";
     output.reserve(tag.size() + master.size() + 16U);
     append_framed_string(output, tag);
     append_framed_string(output, master);
+    output_guard.release();
+    return output;
+}
+
+[[nodiscard]] Bytes frame_raw_master(Bytes raw) {
+    const SensitiveBytesGuard raw_guard(raw);
+    if (raw.empty()) {
+        throw Error("raw-byte master input must not be empty");
+    }
+    if (raw.size() > kMaximumMasterBytes) {
+        throw Error("raw-byte master input exceeds 4096 decoded bytes");
+    }
+    Bytes output;
+    SensitiveBytesGuard output_guard(output);
+    constexpr std::string_view tag = "ArborKDF/master/raw-bytes/v1";
+    output.reserve(tag.size() + raw.size() + 16U);
+    append_framed_string(output, tag);
+    append_framed_bytes(output, raw);
+    output_guard.release();
     return output;
 }
 
@@ -441,6 +526,16 @@ public:
             maximum_bytes_ = kMaximumMasterBytes;
             return;
         }
+        if (encoding == "hex" || encoding == "base64") {
+            if (options.optional("--input-wordlist").has_value()) {
+                throw Error("--input-wordlist is only valid with wordlist input");
+            }
+            kind_ = encoding == "hex" ? Kind::hex : Kind::base64;
+            maximum_bytes_ = encoding == "hex"
+                                 ? kMaximumHexMasterCharacters
+                                 : kMaximumBase64MasterCharacters;
+            return;
+        }
         if (encoding == "wordlist") {
             const std::optional<std::string> source =
                 options.optional("--input-wordlist");
@@ -452,7 +547,8 @@ public:
             maximum_bytes_ = kMaximumMasterPhraseBytes;
             return;
         }
-        throw Error("--input-encoding must be exactly utf8 or wordlist");
+        throw Error(
+            "--input-encoding must be exactly utf8, hex, base64, or wordlist");
     }
 
     [[nodiscard]] std::size_t maximum_bytes() const noexcept {
@@ -463,6 +559,12 @@ public:
         switch (kind_) {
             case Kind::utf8:
                 return frame_utf8_master(master);
+            case Kind::hex:
+                return frame_raw_master(
+                    decode_hex(master, kMaximumHexMasterCharacters));
+            case Kind::base64:
+                return frame_raw_master(
+                    decode_base64(master, kMaximumBase64MasterCharacters));
             case Kind::wordlist:
                 if (!wordlist_.has_value()) {
                     throw Error("internal input wordlist state is missing");
@@ -473,7 +575,7 @@ public:
     }
 
 private:
-    enum class Kind { utf8, wordlist };
+    enum class Kind { utf8, hex, base64, wordlist };
 
     Kind kind_{Kind::utf8};
     std::size_t maximum_bytes_{kMaximumMasterBytes};
@@ -488,12 +590,22 @@ private:
     return decoder.frame(master);
 }
 
-[[nodiscard]] std::vector<std::string> split_words(const std::string& phrase) {
+[[nodiscard]] std::vector<std::string> split_words(
+    const std::string& phrase,
+    const std::optional<std::size_t> maximum_words = std::nullopt) {
     if (phrase.empty()) {
         return {};
     }
     require_valid_utf8(phrase, "wordlist phrase");
     std::vector<std::string> words;
+    const auto append_word = [&words, maximum_words](
+                                 const std::string& word) {
+        if (maximum_words.has_value() && words.size() >= *maximum_words) {
+            throw Error(
+                "wordlist salt exceeds the 8192-bit decoded-size limit");
+        }
+        words.push_back(word);
+    };
     std::size_t start = 0U;
     for (std::size_t offset = 0U; offset < phrase.size(); ++offset) {
         const unsigned char byte = static_cast<unsigned char>(phrase[offset]);
@@ -501,7 +613,7 @@ private:
             if (offset == start) {
                 throw Error("wordlist phrase must use exactly one ASCII space between words");
             }
-            words.emplace_back(phrase.substr(start, offset - start));
+            append_word(phrase.substr(start, offset - start));
             start = offset + 1U;
         } else if (byte <= 0x20U || byte == 0x7fU) {
             throw Error("wordlist phrase contains ASCII whitespace or a control byte");
@@ -510,8 +622,70 @@ private:
     if (start == phrase.size()) {
         throw Error("wordlist phrase may not end with a space");
     }
-    words.emplace_back(phrase.substr(start));
+    append_word(phrase.substr(start));
     return words;
+}
+
+[[nodiscard]] Bytes decode_public_salt(const Options& options) {
+    const std::optional<std::string> legacy_hex = options.optional("--salt-hex");
+    const std::optional<std::string> encoded = options.optional("--salt");
+    const std::optional<std::string> encoding = options.optional("--salt-encoding");
+    const std::optional<std::string> wordlist_source =
+        options.optional("--salt-wordlist");
+
+    Bytes salt;
+    if (legacy_hex.has_value()) {
+        if (encoded.has_value() || encoding.has_value() || wordlist_source.has_value()) {
+            throw Error(
+                "--salt-hex cannot be combined with --salt, --salt-encoding, "
+                "or --salt-wordlist");
+        }
+        salt = decode_hex(*legacy_hex, 2048U);
+    } else {
+        if (!encoded.has_value()) {
+            throw Error("missing required option: --salt");
+        }
+        if (!encoding.has_value()) {
+            throw Error("missing required option: --salt-encoding");
+        }
+        if (*encoding == "hex") {
+            if (wordlist_source.has_value()) {
+                throw Error("--salt-wordlist is only valid with wordlist salt input");
+            }
+            salt = decode_hex(*encoded, 2048U);
+        } else if (*encoding == "base64") {
+            if (wordlist_source.has_value()) {
+                throw Error("--salt-wordlist is only valid with wordlist salt input");
+            }
+            salt = decode_base64(*encoded, kMaximumBase64SaltCharacters);
+        } else if (*encoding == "wordlist") {
+            if (!wordlist_source.has_value()) {
+                throw Error("--salt-wordlist is required for wordlist salt input");
+            }
+            if (encoded->size() > kMaximumMasterPhraseBytes) {
+                throw Error("wordlist salt input exceeds 8 MiB");
+            }
+            const Wordlist wordlist = Wordlist::from_source(*wordlist_source);
+            const WordlistBitsCompatibility list_diagnostic =
+                analyze_wordlist_bits_compatibility(0U, wordlist.size());
+            if (!list_diagnostic.bits_per_word.has_value()) {
+                throw WordlistCodecError(list_diagnostic);
+            }
+            const std::size_t maximum_words =
+                kMaximumSaltBits / *list_diagnostic.bits_per_word;
+            salt = decode_wordlist_bits_v1(
+                split_words(*encoded, maximum_words), wordlist);
+        } else {
+            throw Error(
+                "--salt-encoding must be exactly hex, base64, or wordlist");
+        }
+    }
+
+    if (salt.size() < 16U || salt.size() > 1024U) {
+        secure_clear(salt);
+        throw Error("public salt must contain between 16 and 1024 decoded bytes");
+    }
+    return salt;
 }
 
 class OutputEncoder final {
@@ -599,20 +773,20 @@ private:
 }
 
 void print_parameter_advisory(const KdfParameters& parameters) {
-    const bool meets_first_rfc_profile =
-        parameters.argon2_memory_kib >= 2097152U &&
-        parameters.argon2_iterations >= 1U &&
-        parameters.argon2_parallelism >= 4U;
-    const bool meets_second_rfc_profile =
-        parameters.argon2_memory_kib >= 65536U &&
-        parameters.argon2_iterations >= 3U &&
-        parameters.argon2_parallelism >= 4U;
-    if (!meets_first_rfc_profile && !meets_second_rfc_profile) {
+    const bool is_first_rfc_profile =
+        parameters.argon2_memory_kib == 2097152U &&
+        parameters.argon2_iterations == 1U &&
+        parameters.argon2_parallelism == 4U;
+    const bool is_second_rfc_profile =
+        parameters.argon2_memory_kib == 65536U &&
+        parameters.argon2_iterations == 3U &&
+        parameters.argon2_parallelism == 4U;
+    if (!is_first_rfc_profile && !is_second_rfc_profile) {
         std::cerr <<
-            "Warning: selected Argon2id costs meet neither named RFC 9106 "
-            "profiles (2 GiB/t=1/p=4 and 64 MiB/t=3/p=4). The explicit values "
-            "are accepted, but may be test-grade; calibrate for the target "
-            "machine and threat model.\n";
+            "Warning: selected Argon2id tuple is not exactly either named RFC "
+            "9106 profile (2 GiB/t=1/p=4 or 64 MiB/t=3/p=4). Custom explicit "
+            "values are accepted; calibrate them for the target machine and "
+            "threat model.\n";
     }
 }
 
@@ -625,6 +799,9 @@ int command_subkey_generate(const std::vector<std::string>& arguments) {
     options.reject_unknown(
         {"--input-encoding",
          "--input-wordlist",
+         "--salt",
+         "--salt-encoding",
+         "--salt-wordlist",
          "--salt-hex",
          "--path",
          "--pbkdf2-iterations",
@@ -639,10 +816,8 @@ int command_subkey_generate(const std::vector<std::string>& arguments) {
 
     const std::string path = options.required("--path");
     validate_path(path);
-    const Bytes salt = decode_hex(options.required("--salt-hex"), 2048U);
-    if (salt.size() < 16U || salt.size() > 1024U) {
-        throw Error("public salt must contain between 16 and 1024 bytes");
-    }
+    Bytes salt = decode_public_salt(options);
+    const SensitiveBytesGuard salt_guard(salt);
     const KdfParameters parameters = parse_kdf_parameters(options);
     const OutputEncoder output_encoder(options.required("--output-encoding"),
                                        options.optional("--output-wordlist"),
@@ -673,48 +848,95 @@ int command_subkey_generate(const std::vector<std::string>& arguments) {
     return value;
 }
 
-[[nodiscard]] std::vector<std::size_t> sample_word_indices(
+struct WordSamplingResult final {
+    std::vector<std::size_t> indices;
+    ConditioningDiagnostics diagnostics;
+};
+
+void accumulate_conditioning_diagnostics(
+    ConditioningDiagnostics& aggregate,
+    const ConditioningDiagnostics& next) {
+    if (aggregate.os.source != next.os.source ||
+        aggregate.os.path != next.os.path) {
+        throw Error("random sampler received inconsistent OS source diagnostics");
+    }
+    if (next.os.bytes_read >
+            std::numeric_limits<std::size_t>::max() - aggregate.os.bytes_read ||
+        next.os.input_bits >
+            std::numeric_limits<std::size_t>::max() - aggregate.os.input_bits) {
+        throw Error("random sampler diagnostic length overflow");
+    }
+    aggregate.os.bytes_read += next.os.bytes_read;
+    aggregate.os.input_bits += next.os.input_bits;
+    aggregate.combined.os_supplied_input_bits +=
+        next.combined.os_supplied_input_bits;
+    // Every rejection-sampling batch gets a fresh independent OS read, but it
+    // reuses the same mouse transcript. Count that mouse evidence only once.
+    aggregate.combined.policy_weighted_total_bits =
+        aggregate.combined.os_supplied_input_bits +
+        aggregate.combined.mouse_policy_weight_bits;
+    const double total = aggregate.combined.policy_weighted_total_bits;
+    if (total > 0.0) {
+        aggregate.combined.os_policy_percent =
+            (aggregate.combined.os_supplied_input_bits / total) * 100.0;
+        aggregate.combined.mouse_policy_percent =
+            (aggregate.combined.mouse_policy_weight_bits / total) * 100.0;
+    }
+}
+
+[[nodiscard]] WordSamplingResult sample_word_indices(
     const std::vector<MouseEvent>& events,
     const std::size_t word_count,
     const std::size_t wordlist_size) {
+    if (word_count == 0U) {
+        throw Error("word sampler requires at least one word");
+    }
     if (wordlist_size < 2U ||
         wordlist_size > static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())) {
         throw Error("wordlist size is outside the unbiased sampler range");
     }
     const std::uint64_t modulus = static_cast<std::uint64_t>(wordlist_size);
     const std::uint64_t rejection_floor = (UINT64_C(0) - modulus) % modulus;
-    std::vector<std::size_t> output;
-    output.reserve(word_count);
+    WordSamplingResult result{};
+    SensitiveIndicesGuard indices_guard(result.indices);
+    result.indices.reserve(word_count);
+    bool have_diagnostics = false;
     std::uint64_t batch = 0U;
-    while (output.size() < word_count) {
-        const std::size_t remaining = word_count - output.size();
+    while (result.indices.size() < word_count) {
+        const std::size_t remaining = word_count - result.indices.size();
         const std::size_t values_to_request = remaining + 16U;
         if (values_to_request > std::numeric_limits<std::size_t>::max() / 8U) {
             throw Error("word count is too large");
         }
         const std::string purpose =
             "ArborKDF/masterkey/wordlist/v1/batch/" + std::to_string(batch);
-        Bytes random = condition_random(events, purpose, values_to_request * 8U);
+        ConditionedRandomResult conditioned =
+            condition_random(events, purpose, values_to_request * 8U);
+        SensitiveBytesGuard random_guard(conditioned.bytes);
+        if (!have_diagnostics) {
+            result.diagnostics = std::move(conditioned.diagnostics);
+            have_diagnostics = true;
+        } else {
+            accumulate_conditioning_diagnostics(result.diagnostics,
+                                                 conditioned.diagnostics);
+        }
         for (std::size_t offset = 0U;
-             offset + 8U <= random.size() && output.size() < word_count;
+             offset + 8U <= conditioned.bytes.size() &&
+                 result.indices.size() < word_count;
              offset += 8U) {
-            const std::uint64_t candidate = load_u64(random, offset);
+            const std::uint64_t candidate = load_u64(conditioned.bytes, offset);
             if (candidate >= rejection_floor) {
-                output.push_back(static_cast<std::size_t>(candidate % modulus));
+                result.indices.push_back(
+                    static_cast<std::size_t>(candidate % modulus));
             }
         }
-        secure_clear(random);
         if (batch == std::numeric_limits<std::uint64_t>::max()) {
             throw Error("unbiased word sampler counter exhausted");
         }
         ++batch;
     }
-    return output;
-}
-
-void print_entropy_summary(const std::vector<MouseEvent>& events) {
-    const EntropyReport report = analyze_mouse_events(events);
-    std::cerr << '\n' << format_entropy_report(report);
+    indices_guard.release();
+    return result;
 }
 
 int command_masterkey_generate(const std::vector<std::string>& arguments) {
@@ -736,11 +958,13 @@ int command_masterkey_generate(const std::vector<std::string>& arguments) {
         if (words == 0U || words > kMaximumGeneratedWords) {
             throw Error("--words must be between 1 and 4096");
         }
-        const std::vector<MouseEvent> events = collect_mouse_events();
-        print_entropy_summary(events);
-        std::vector<std::size_t> indices =
+        std::vector<MouseEvent> events = collect_mouse_events();
+        const SensitiveMouseEventsGuard events_guard(events);
+        WordSamplingResult sampled =
             sample_word_indices(events, words, wordlist.size());
-        const SensitiveIndicesGuard indices_guard(indices);
+        const SensitiveIndicesGuard indices_guard(sampled.indices);
+        std::cerr << '\n'
+                  << format_conditioning_diagnostics(sampled.diagnostics);
         const long double entropy = master_phrase_entropy_bits(words, wordlist.size());
         std::cerr << "Master phrase ideal code-space entropy: " <<
             static_cast<double>(entropy) << " bits (" << words << " * log2(" <<
@@ -748,11 +972,12 @@ int command_masterkey_generate(const std::vector<std::string>& arguments) {
         const long double security_ceiling = std::min(entropy, 256.0L);
         std::cerr << "Generator security-strength ceiling: " <<
             static_cast<double>(security_ceiling) <<
-            " classical bits (SHAKE256 ceiling; mouse credit is 0)\n";
+            " classical bits (SHAKE256 ceiling; mouse is diagnostic only)\n";
         std::cerr << "Conservative generic quantum-search exponent: at most " <<
             static_cast<double>(security_ceiling / 2.0L) <<
             " bits; this is not a certification\n";
-        std::string phrase = format_master_phrase_indices(indices, wordlist);
+        std::string phrase =
+            format_master_phrase_indices(sampled.indices, wordlist);
         const SensitiveStringGuard phrase_guard(phrase);
         write_stdout(phrase, true);
         return 0;
@@ -769,16 +994,19 @@ int command_masterkey_generate(const std::vector<std::string>& arguments) {
     if (bits == 0U || bits > kMaximumGeneratedBits || bits % 8U != 0U) {
         throw Error("--bits must be a byte-aligned value between 8 and 4096");
     }
-    const std::vector<MouseEvent> events = collect_mouse_events();
-    print_entropy_summary(events);
-    Bytes secret = condition_random(events, "ArborKDF/masterkey/bytes/v1", bits / 8U);
+    std::vector<MouseEvent> events = collect_mouse_events();
+    const SensitiveMouseEventsGuard events_guard(events);
+    ConditionedRandomResult conditioned =
+        condition_random(events, "ArborKDF/masterkey/bytes/v1", bits / 8U);
+    Bytes secret = std::move(conditioned.bytes);
     const SensitiveBytesGuard secret_guard(secret);
+    std::cerr << '\n' << format_conditioning_diagnostics(conditioned.diagnostics);
     std::string encoded = encoding == "hex" ? encode_hex(secret) : encode_base64(secret);
     const SensitiveStringGuard encoded_guard(encoded);
     const std::size_t security_ceiling = std::min(bits, std::size_t{256U});
     std::cerr << "Generated master code-space size: " << bits << " bits\n";
     std::cerr << "Generator security-strength ceiling: " << security_ceiling <<
-        " classical bits (SHAKE256 ceiling; mouse credit is 0)\n";
+        " classical bits (SHAKE256 ceiling; mouse is diagnostic only)\n";
     std::cerr << "Conservative generic quantum-search exponent: at most " <<
         security_ceiling / 2U << " bits; this is not a certification\n";
     write_stdout(encoded, true);
@@ -800,10 +1028,13 @@ int command_salt_generate(const std::vector<std::string>& arguments) {
     const OutputEncoder output_encoder(options.required("--output-encoding"),
                                        options.optional("--output-wordlist"),
                                        bits / 8U);
-    const std::vector<MouseEvent> events = collect_mouse_events();
-    print_entropy_summary(events);
-    Bytes salt = condition_random(events, "ArborKDF/salt/v1", bits / 8U);
+    std::vector<MouseEvent> events = collect_mouse_events();
+    const SensitiveMouseEventsGuard events_guard(events);
+    ConditionedRandomResult conditioned =
+        condition_random(events, "ArborKDF/salt/v1", bits / 8U);
+    Bytes salt = std::move(conditioned.bytes);
     const SensitiveBytesGuard salt_guard(salt);
+    std::cerr << '\n' << format_conditioning_diagnostics(conditioned.diagnostics);
     std::string output = output_encoder.encode(salt);
     const SensitiveStringGuard output_guard(output);
     write_stdout(output, true);
@@ -951,6 +1182,10 @@ int run_cli(const int argc, char* argv[]) {
         const std::string first(argv[1]);
         if ((first == "--help" || first == "-h") && argc == 2) {
             write_stdout(kGlobalHelp, false);
+            return 0;
+        }
+        if (first == "--version" && argc == 2) {
+            write_stdout(kVersion, false);
             return 0;
         }
         if (first == "--gui" || first == "-g") {

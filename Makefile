@@ -12,21 +12,19 @@ else
 TARGET_OS ?= unknown
 endif
 
-ifeq ($(filter $(TARGET_OS),linux darwin windows),)
-$(error unsupported TARGET_OS '$(TARGET_OS)'; use linux, darwin, or windows)
+MAINTENANCE_GOALS := clean verify-wordlists regenerate-wordlists
+ONLY_MAINTENANCE_GOALS := $(and $(MAKECMDGOALS),\
+	$(if $(filter-out $(MAINTENANCE_GOALS),$(MAKECMDGOALS)),,1))
+
+ifneq ($(TARGET_OS),linux)
+ifneq ($(ONLY_MAINTENANCE_GOALS),1)
+$(error ArborKDF randomness is not implemented yet for TARGET_OS '$(TARGET_OS)'; this version is Linux-only)
+endif
 endif
 
 EXEEXT :=
 NULL_DEVICE := /dev/null
 CLI_TEST_ENV :=
-ifeq ($(TARGET_OS),windows)
-EXEEXT := .exe
-NULL_DEVICE := NUL
-# MSYS2 otherwise rewrites virtual paths such as /testing/path before the
-# native Windows program receives them.
-CLI_TEST_ENV := MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1
-endif
-
 BUILD_MODE := dynamic
 PROGRAM_STEM := arborkdf
 TEST_STEM := arborkdf-tests
@@ -39,6 +37,8 @@ ARBORKDF_LDFLAGS += -static
 endif
 ifeq ($(SANITIZE),1)
 BUILD_MODE := $(BUILD_MODE)-sanitize
+PROGRAM_STEM := $(PROGRAM_STEM)-sanitize
+TEST_STEM := $(TEST_STEM)-sanitize
 OPTFLAGS := -O1
 ARBORKDF_CXXFLAGS += -g -fno-omit-frame-pointer -fsanitize=address,undefined
 ARBORKDF_LDFLAGS += -fsanitize=address,undefined
@@ -61,13 +61,6 @@ ARBORKDF_LDLIBS += $(OPENSSL_LIBS) $(ARGON2_LIBS) $(ZLIB_LIBS)
 ifeq ($(TARGET_OS),linux)
 ARBORKDF_LDLIBS += -pthread -ldl
 endif
-ifeq ($(TARGET_OS),darwin)
-ARBORKDF_LDLIBS += -pthread
-endif
-ifeq ($(TARGET_OS),windows)
-ARBORKDF_LDLIBS += -luser32
-endif
-
 LIB_SOURCES := \
 	src/cli.cpp \
 	src/codec.cpp \
@@ -130,6 +123,7 @@ check: test $(PROGRAM)
 	./$(PROGRAM) wordlist list --help >$(NULL_DEVICE)
 	./$(PROGRAM) wordlist export --help >$(NULL_DEVICE)
 	$(PYTHON) tests/test_wordlist_cli.py ./$(PROGRAM)
+	$(PYTHON) tests/test_cli_recovery.py ./$(PROGRAM)
 	@test "$$(./$(PROGRAM) encoding encode \
 		--input-hex 0000000000000000000000 --wordlist embedded_bip39)" = \
 		"abandon abandon abandon abandon abandon abandon abandon abandon"
@@ -162,10 +156,15 @@ static:
 	$(MAKE) STATIC=1 TARGET_OS=$(TARGET_OS) all
 
 sanitize:
-	$(MAKE) SANITIZE=1 TARGET_OS=$(TARGET_OS) test
+	$(MAKE) SANITIZE=1 TARGET_OS=$(TARGET_OS) check
 
 clean:
 	rm -rf -- build arborkdf arborkdf-tests arborkdf-static arborkdf-tests-static \
-		arborkdf.exe arborkdf-tests.exe arborkdf-static.exe arborkdf-tests-static.exe
+		arborkdf-sanitize arborkdf-tests-sanitize \
+		arborkdf-static-sanitize arborkdf-tests-static-sanitize \
+		arborkdf.exe arborkdf-tests.exe arborkdf-static.exe \
+		arborkdf-tests-static.exe arborkdf-sanitize.exe \
+		arborkdf-tests-sanitize.exe arborkdf-static-sanitize.exe \
+		arborkdf-tests-static-sanitize.exe
 
 -include $(DEPENDENCIES)

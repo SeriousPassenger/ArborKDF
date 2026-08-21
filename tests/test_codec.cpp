@@ -96,6 +96,44 @@ void test_base64() {
             "base64 five bytes");
     require(arborkdf::encode_base64(bytes_from_ascii("foobar")) == "Zm9vYmFy",
             "base64 six bytes");
+
+    require(arborkdf::decode_base64("").empty(), "base64 empty input");
+    require(arborkdf::decode_base64("Zg==") == bytes_from_ascii("f"),
+            "base64 one-byte decode");
+    require(arborkdf::decode_base64("Zm8=") == bytes_from_ascii("fo"),
+            "base64 two-byte decode");
+    require(arborkdf::decode_base64("Zm9vYmFy") == bytes_from_ascii("foobar"),
+            "base64 full-group decode");
+    arborkdf::Bytes every_byte;
+    every_byte.reserve(256U);
+    for (unsigned int value = 0U; value <= 255U; ++value) {
+        every_byte.push_back(static_cast<std::uint8_t>(value));
+    }
+    require(arborkdf::decode_base64(arborkdf::encode_base64(every_byte)) ==
+                every_byte,
+            "base64 all-byte round trip");
+
+    require_throws<arborkdf::CodecError>(
+        [] { static_cast<void>(arborkdf::decode_base64("Zg")); },
+        "multiple of 4");
+    require_throws<arborkdf::CodecError>(
+        [] { static_cast<void>(arborkdf::decode_base64("Zg= ")); },
+        "padding");
+    require_throws<arborkdf::CodecError>(
+        [] { static_cast<void>(arborkdf::decode_base64("Zg===")); },
+        "multiple of 4");
+    require_throws<arborkdf::CodecError>(
+        [] { static_cast<void>(arborkdf::decode_base64("Zm=v")); },
+        "non-canonical padding");
+    require_throws<arborkdf::CodecError>(
+        [] { static_cast<void>(arborkdf::decode_base64("Zh==")); },
+        "tail bits");
+    require_throws<arborkdf::CodecError>(
+        [] { static_cast<void>(arborkdf::decode_base64("Zm9=")); },
+        "tail bits");
+    require_throws<arborkdf::CodecError>(
+        [] { static_cast<void>(arborkdf::decode_base64("Zm9v", 3U)); },
+        "maximum is 3");
 }
 
 void test_utf8() {
@@ -158,6 +196,36 @@ void test_wordlist_validation() {
     require_throws<arborkdf::WordlistError>(
         [] {
             static_cast<void>(arborkdf::Wordlist::parse(
+                "zero\nsafe\xe2\x80\xae", "bidi-override"));
+        },
+        "format characters");
+    require_throws<arborkdf::WordlistError>(
+        [] {
+            static_cast<void>(arborkdf::Wordlist::parse(
+                "zero\nsafe\xe2\x80\x8b", "zero-width-space"));
+        },
+        "format characters");
+    require_throws<arborkdf::WordlistError>(
+        [] {
+            static_cast<void>(arborkdf::Wordlist::parse(
+                "zero\nsafe\xc2\xa0", "non-breaking-space"));
+        },
+        "separator characters");
+    require_throws<arborkdf::WordlistError>(
+        [] {
+            static_cast<void>(arborkdf::Wordlist::parse(
+                "caf\xc3\xa9\ncafe\xcc\x81", "decomposed-duplicate"));
+        },
+        "combining marks");
+    require_throws<arborkdf::WordlistError>(
+        [] {
+            static_cast<void>(arborkdf::Wordlist::parse(
+                "zero\nsafe\xef\xb7\x90", "noncharacter"));
+        },
+        "noncharacters");
+    require_throws<arborkdf::WordlistError>(
+        [] {
+            static_cast<void>(arborkdf::Wordlist::parse(
                 "zero\none\nzero", "duplicate"));
         },
         "duplicate word");
@@ -173,6 +241,34 @@ void test_wordlist_validation() {
                 std::string("zero\n\xff", 6U), "invalid-utf8"));
         },
         "not valid UTF-8");
+
+    const arborkdf::Wordlist multilingual =
+        arborkdf::Wordlist::parse(u8"türkçe\n日本語", "multilingual");
+    require(multilingual.find_index(u8"日本語") ==
+                std::optional<std::size_t>(1U),
+            "ordinary precomposed multilingual words remain valid");
+
+    arborkdf::Wordlist copied(multilingual);
+    require(copied.find_index(u8"türkçe") ==
+                std::optional<std::size_t>(0U),
+            "copied wordlist rebuilds non-owning lookup views");
+    arborkdf::Wordlist copy_assigned =
+        arborkdf::Wordlist::parse("red\nblue", "copy-target");
+    copy_assigned = multilingual;
+    require(copy_assigned.find_index(u8"日本語") ==
+                std::optional<std::size_t>(1U),
+            "copy-assigned wordlist rebuilds non-owning lookup views");
+
+    arborkdf::Wordlist moved(std::move(copied));
+    require(moved.find_index(u8"日本語") ==
+                std::optional<std::size_t>(1U),
+            "move-constructed wordlist rebuilds lookup views");
+    arborkdf::Wordlist move_assigned =
+        arborkdf::Wordlist::parse("left\nright", "move-target");
+    move_assigned = std::move(moved);
+    require(move_assigned.find_index(u8"türkçe") ==
+                std::optional<std::size_t>(0U),
+            "move-assigned wordlist keeps lookup views valid");
 }
 
 void test_embedded_bip39_wordlist() {
