@@ -17,9 +17,13 @@ endif
 
 EXEEXT :=
 NULL_DEVICE := /dev/null
+CLI_TEST_ENV :=
 ifeq ($(TARGET_OS),windows)
 EXEEXT := .exe
 NULL_DEVICE := NUL
+# MSYS2 otherwise rewrites virtual paths such as /testing/path before the
+# native Windows program receives them.
+CLI_TEST_ENV := MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1
 endif
 
 BUILD_MODE := dynamic
@@ -111,7 +115,7 @@ check: test $(PROGRAM)
 	./$(PROGRAM) salt generate --help >$(NULL_DEVICE)
 	./$(PROGRAM) encoding encode --help >$(NULL_DEVICE)
 	./$(PROGRAM) encoding decode --help >$(NULL_DEVICE)
-	@test "$$(printf 'test\n' | ./$(PROGRAM) subkey generate \
+	@test "$$(printf 'test\n' | $(CLI_TEST_ENV) ./$(PROGRAM) subkey generate \
 		--input-encoding utf8 --master-stdin \
 		--salt-hex 000102030405060708090a0b0c0d0e0f \
 		--path /testing/path --pbkdf2-iterations 1 \
