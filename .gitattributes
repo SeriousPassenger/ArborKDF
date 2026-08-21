@@ -1,0 +1,8 @@
+third_party/bip39/english.txt text eol=lf
+third_party/arborkdf-wordlists/en_tr_jp_131072.txt text eol=lf
+third_party/arborkdf-wordlists/en_tr_jp_131072.manifest.json text eol=lf
+include/arborkdf/generated/*.hpp text eol=lf
+extras/*.py text eol=lf
+tests/*.py text eol=lf
+third_party/scowl/COPYRIGHT -whitespace
+third_party/mecab-naist-jdic/COPYING -whitespace

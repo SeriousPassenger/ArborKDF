@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ make libssl-dev libargon2-dev zlib1g-dev
+      - name: Build and test
+        run: make check
+      - name: Sanitizers
+        run: ASAN_OPTIONS=detect_leaks=0 make sanitize
+      - name: Static build
+        run: |
+          make clean
+          make STATIC=1 check
+      - name: Verify static executable
+        run: |
+          file arborkdf-static
+          file arborkdf-static | grep -q "statically linked"
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install argon2 openssl@3 zlib
+      - name: Build and test
+        run: |
+          dependency_cppflags="-I$(brew --prefix openssl@3)/include -I$(brew --prefix argon2)/include -I$(brew --prefix zlib)/include"
+          dependency_ldflags="-L$(brew --prefix openssl@3)/lib -L$(brew --prefix argon2)/lib -L$(brew --prefix zlib)/lib"
+          make TARGET_OS=darwin CPPFLAGS="$dependency_cppflags" LDFLAGS="$dependency_ldflags" check
+
+  windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable native symlinks for tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $key = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock"
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key `
+            -Name AllowDevelopmentWithoutDevLicense `
+            -PropertyType DWord -Value 1 -Force | Out-Null
+          if ((Get-ItemPropertyValue -Path $key `
+                -Name AllowDevelopmentWithoutDevLicense) -ne 1) {
+            throw "failed to enable Developer Mode for native symlink tests"
+          }
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            python
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-argon2
+            mingw-w64-ucrt-x86_64-zlib
+      - name: Build and test
+        env:
+          MSYS: winsymlinks:nativestrict
+          ARBORKDF_TEST_REQUIRE_NATIVE_SYMLINK: "1"
+        run: make TARGET_OS=windows check

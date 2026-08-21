@@ -1,0 +1,14 @@
+/arborkdf
+/arborkdf-tests
+/build/
+*.o
+*.d
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+__pycache__/
+*.pyc
+.DS_Store
