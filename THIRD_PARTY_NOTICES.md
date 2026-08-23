@@ -37,7 +37,14 @@ data makes the complete composite canonical text and generated embedding
 MPL-2.0-covered files; the English and Japanese source notices also remain
 applicable. ArborKDF's original program code remains separately MIT-licensed.
 
-ArborKDF links to, but does not vendor, OpenSSL, libargon2, and zlib. Their
-respective licenses apply to built distributions, especially statically linked
-artifacts. Do not distribute a standalone binary without the required notices,
-license materials, and any applicable source offer or source availability.
+ArborKDF links to OpenSSL, libargon2, and zlib. Their respective licenses apply
+to built distributions, especially statically linked artifacts. The managed
+static build downloads, but does not commit to this repository, the official
+OpenSSL 3.5.5 release archive from:
+<https://github.com/openssl/openssl/releases/download/openssl-3.5.5/openssl-3.5.5.tar.gz>
+
+Recorded upstream SHA-256:
+`b28c91532a8b65a1f983b4c28b7488174e4a01008e29ce8e69bd789f28bc2a89`.
+OpenSSL is licensed under Apache License 2.0. Do not distribute a standalone
+binary without the required notices, license materials, and any applicable
+source offer or source availability.

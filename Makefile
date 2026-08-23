@@ -1,7 +1,16 @@
 CXX ?= c++
 PYTHON ?= python3
+CURL ?= curl
+SHA256SUM ?= sha256sum
+TAR ?= tar
+
+override OPENSSL_VERSION := 3.5.5
+override OPENSSL_SHA256 := b28c91532a8b65a1f983b4c28b7488174e4a01008e29ce8e69bd789f28bc2a89
+OPENSSL_SOURCE_URL ?= https://github.com/openssl/openssl/releases/download/openssl-$(OPENSSL_VERSION)/openssl-$(OPENSSL_VERSION).tar.gz
+DEPS_DIR ?= $(CURDIR)/.deps
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Unknown)
+UNAME_M := $(shell uname -m 2>/dev/null || echo unknown)
 ifeq ($(OS),Windows_NT)
 TARGET_OS ?= windows
 else ifeq ($(UNAME_S),Linux)
@@ -12,7 +21,7 @@ else
 TARGET_OS ?= unknown
 endif
 
-MAINTENANCE_GOALS := clean verify-wordlists regenerate-wordlists
+MAINTENANCE_GOALS := clean clean-static-deps verify-wordlists regenerate-wordlists
 ONLY_MAINTENANCE_GOALS := $(and $(MAKECMDGOALS),\
 	$(if $(filter-out $(MAINTENANCE_GOALS),$(MAKECMDGOALS)),,1))
 
@@ -53,6 +62,28 @@ ARBORKDF_CXXFLAGS += -std=c++17 $(OPTFLAGS) -Wall -Wextra -Wpedantic -Wconversio
 	-Wsign-conversion -Wshadow -Wformat=2 -Wnull-dereference -Wdouble-promotion \
 	-Werror -MMD -MP
 
+OPENSSL_DOWNLOAD_DIR := $(DEPS_DIR)/downloads
+OPENSSL_SOURCE_ROOT := $(DEPS_DIR)/src
+OPENSSL_BUILD_ROOT := $(DEPS_DIR)/build
+OPENSSL_ARCHIVE := $(OPENSSL_DOWNLOAD_DIR)/openssl-$(OPENSSL_VERSION).tar.gz
+OPENSSL_SOURCE_DIR := $(OPENSSL_SOURCE_ROOT)/openssl-$(OPENSSL_VERSION)
+OPENSSL_SOURCE_STAMP := $(OPENSSL_SOURCE_DIR)/.arborkdf-extracted
+OPENSSL_BUILD_DIR := $(OPENSSL_BUILD_ROOT)/openssl-$(OPENSSL_VERSION)-$(TARGET_OS)-$(UNAME_M)-static
+OPENSSL_PREFIX := $(DEPS_DIR)/openssl-$(OPENSSL_VERSION)-$(TARGET_OS)-$(UNAME_M)-static
+OPENSSL_STATIC_LIBRARY := $(OPENSSL_PREFIX)/lib/libcrypto.a
+override OPENSSL_CONFIGURE_FLAGS := no-shared no-pinshared no-module no-dso no-engine \
+	no-legacy no-sock no-dgram no-http no-quic no-comp no-zlib no-zstd \
+	no-brotli no-jitter no-autoload-config no-docs
+
+STATIC_PREREQUISITES :=
+ifeq ($(STATIC),1)
+ifeq ($(origin OPENSSL_LIBS),undefined)
+ARBORKDF_CPPFLAGS += -I$(OPENSSL_PREFIX)/include
+OPENSSL_LIBS := $(OPENSSL_STATIC_LIBRARY)
+STATIC_PREREQUISITES += $(OPENSSL_STATIC_LIBRARY)
+endif
+endif
+
 OPENSSL_LIBS ?= -lcrypto
 ARGON2_LIBS ?= -largon2
 ZLIB_LIBS ?= -lz
@@ -82,7 +113,8 @@ PROGRAM_OBJECTS := $(PROGRAM_SOURCES:%.cpp=$(BUILD_DIR)/%.o)
 TEST_OBJECTS := $(TEST_SOURCES:%.cpp=$(BUILD_DIR)/%.o)
 DEPENDENCIES := $(LIB_OBJECTS:.o=.d) $(PROGRAM_OBJECTS:.o=.d) $(TEST_OBJECTS:.o=.d)
 
-.PHONY: all clean test check static sanitize verify-wordlists regenerate-wordlists
+.PHONY: all clean clean-static-deps fetch-static-deps openssl-static test check \
+	static static-check sanitize verify-wordlists regenerate-wordlists
 
 all: $(PROGRAM)
 
@@ -92,13 +124,15 @@ verify-wordlists:
 regenerate-wordlists:
 	$(PYTHON) extras/gen_wordlist_header.py
 
-$(LIB_OBJECTS) $(PROGRAM_OBJECTS) $(TEST_OBJECTS): | verify-wordlists
+$(LIB_OBJECTS) $(PROGRAM_OBJECTS) $(TEST_OBJECTS): $(STATIC_PREREQUISITES) | verify-wordlists
 
-$(PROGRAM): $(LIB_OBJECTS) $(PROGRAM_OBJECTS)
-	$(CXX) $(LDFLAGS) $(ARBORKDF_LDFLAGS) -o $@ $^ $(LDLIBS) $(ARBORKDF_LDLIBS)
+$(PROGRAM): $(LIB_OBJECTS) $(PROGRAM_OBJECTS) $(STATIC_PREREQUISITES)
+	$(CXX) $(LDFLAGS) $(ARBORKDF_LDFLAGS) -o $@ \
+		$(LIB_OBJECTS) $(PROGRAM_OBJECTS) $(LDLIBS) $(ARBORKDF_LDLIBS)
 
-$(TEST_PROGRAM): $(LIB_OBJECTS) $(TEST_OBJECTS)
-	$(CXX) $(LDFLAGS) $(ARBORKDF_LDFLAGS) -o $@ $^ $(LDLIBS) $(ARBORKDF_LDLIBS)
+$(TEST_PROGRAM): $(LIB_OBJECTS) $(TEST_OBJECTS) $(STATIC_PREREQUISITES)
+	$(CXX) $(LDFLAGS) $(ARBORKDF_LDFLAGS) -o $@ \
+		$(LIB_OBJECTS) $(TEST_OBJECTS) $(LDLIBS) $(ARBORKDF_LDLIBS)
 
 $(BUILD_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
@@ -155,8 +189,46 @@ check: test $(PROGRAM)
 static:
 	$(MAKE) STATIC=1 TARGET_OS=$(TARGET_OS) all
 
+static-check:
+	$(MAKE) STATIC=1 TARGET_OS=$(TARGET_OS) check
+
 sanitize:
 	$(MAKE) SANITIZE=1 TARGET_OS=$(TARGET_OS) check
+
+$(OPENSSL_ARCHIVE):
+	@mkdir -p "$(@D)"
+	@rm -f -- "$@.tmp"
+	$(CURL) --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+		--output "$@.tmp" "$(OPENSSL_SOURCE_URL)"
+	@printf '%s  %s\n' "$(OPENSSL_SHA256)" "$@.tmp" | $(SHA256SUM) --check -
+	@mv -- "$@.tmp" "$@"
+
+fetch-static-deps: $(OPENSSL_ARCHIVE)
+	@printf '%s  %s\n' "$(OPENSSL_SHA256)" "$(OPENSSL_ARCHIVE)" | \
+		$(SHA256SUM) --check -
+
+$(OPENSSL_SOURCE_STAMP): $(OPENSSL_ARCHIVE)
+	@printf '%s  %s\n' "$(OPENSSL_SHA256)" "$<" | $(SHA256SUM) --check -
+	@rm -rf -- "$(OPENSSL_SOURCE_DIR).tmp"
+	@mkdir -p "$(OPENSSL_SOURCE_DIR).tmp"
+	$(TAR) -xzf "$<" --strip-components=1 -C "$(OPENSSL_SOURCE_DIR).tmp"
+	@rm -rf -- "$(OPENSSL_SOURCE_DIR)"
+	@mv -- "$(OPENSSL_SOURCE_DIR).tmp" "$(OPENSSL_SOURCE_DIR)"
+	@touch "$@"
+
+$(OPENSSL_STATIC_LIBRARY): $(OPENSSL_SOURCE_STAMP) Makefile
+	@rm -rf -- "$(OPENSSL_BUILD_DIR)" "$(OPENSSL_PREFIX)"
+	@mkdir -p "$(OPENSSL_BUILD_DIR)"
+	cd "$(OPENSSL_BUILD_DIR)" && \
+		"$(OPENSSL_SOURCE_DIR)/config" \
+		--prefix="$(OPENSSL_PREFIX)" --openssldir="$(OPENSSL_PREFIX)/ssl" \
+		--libdir=lib $(OPENSSL_CONFIGURE_FLAGS)
+	$(MAKE) -C "$(OPENSSL_BUILD_DIR)" install_dev
+	@test -f "$@"
+	@grep -Eq '^# *define OPENSSL_VERSION_STR "$(OPENSSL_VERSION)"$$' \
+		"$(OPENSSL_PREFIX)/include/openssl/opensslv.h"
+
+openssl-static: $(OPENSSL_STATIC_LIBRARY)
 
 clean:
 	rm -rf -- build arborkdf arborkdf-tests arborkdf-static arborkdf-tests-static \
@@ -166,5 +238,10 @@ clean:
 		arborkdf-tests-static.exe arborkdf-sanitize.exe \
 		arborkdf-tests-sanitize.exe arborkdf-static-sanitize.exe \
 		arborkdf-tests-static-sanitize.exe
+
+clean-static-deps:
+	rm -rf -- "$(OPENSSL_SOURCE_DIR)" "$(OPENSSL_SOURCE_DIR).tmp" \
+		"$(OPENSSL_BUILD_DIR)" "$(OPENSSL_PREFIX)" "$(OPENSSL_ARCHIVE)" \
+		"$(OPENSSL_ARCHIVE).tmp"
 
 -include $(DEPENDENCIES)
