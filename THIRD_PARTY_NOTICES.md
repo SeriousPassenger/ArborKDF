@@ -40,11 +40,11 @@ applicable. ArborKDF's original program code remains separately MIT-licensed.
 ArborKDF links to OpenSSL, libargon2, and zlib. Their respective licenses apply
 to built distributions, especially statically linked artifacts. The managed
 static build downloads, but does not commit to this repository, the official
-OpenSSL 3.5.5 release archive from:
-<https://github.com/openssl/openssl/releases/download/openssl-3.5.5/openssl-3.5.5.tar.gz>
+OpenSSL 3.5.7 release archive from:
+<https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz>
 
 Recorded upstream SHA-256:
-`b28c91532a8b65a1f983b4c28b7488174e4a01008e29ce8e69bd789f28bc2a89`.
+`a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8`.
 OpenSSL is licensed under Apache License 2.0. Do not distribute a standalone
 binary without the required notices, license materials, and any applicable
 source offer or source availability.

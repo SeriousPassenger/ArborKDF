@@ -69,11 +69,11 @@ Linux dependencies and produces `arborkdf-static`. The separate name and object
 directory prevent a prior dynamic executable from being mistaken for a static
 rebuild.
 
-For static builds, ArborKDF downloads the official OpenSSL 3.5.5 release archive
+For static builds, ArborKDF downloads the official OpenSSL 3.5.7 release archive
 from GitHub on first use and verifies its pinned SHA-256 before extracting it:
 
 ```text
-b28c91532a8b65a1f983b4c28b7488174e4a01008e29ce8e69bd789f28bc2a89
+a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8
 ```
 
 This is a reproducibility pin, not an automatic "latest" selector. Static
@@ -89,9 +89,9 @@ must still be provided by the system toolchain.
 Use `make static-check` to build and run the complete static test suite. The
 download, source, build tree, and installation are cached below `.deps/`; normal
 `make clean` preserves that cache. `make clean-static-deps` removes only the
-managed OpenSSL 3.5.5 cache. To prepare for an offline build, run
+managed OpenSSL 3.5.7 cache. To prepare for an offline build, run
 `make fetch-static-deps` on a connected machine and transfer
-`.deps/downloads/openssl-3.5.5.tar.gz` with the source tree before running
+`.deps/downloads/openssl-3.5.7.tar.gz` with the source tree before running
 `make static` or `make static-check` on the offline machine.
 
 Advanced builds can bypass the managed OpenSSL build by explicitly setting
