@@ -3,6 +3,7 @@
 /arborkdf-*
 /arborkdf-tests-*
 /build/
+/.deps/
 *.o
 *.d
 *.a

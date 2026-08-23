@@ -67,7 +67,36 @@ make static
 Static linking requires static archives for OpenSSL, libargon2, zlib, and their
 Linux dependencies and produces `arborkdf-static`. The separate name and object
 directory prevent a prior dynamic executable from being mistaken for a static
-rebuild. The project does not download or silently substitute a dependency.
+rebuild.
+
+For static builds, ArborKDF downloads the official OpenSSL 3.5.5 release archive
+from GitHub on first use and verifies its pinned SHA-256 before extracting it:
+
+```text
+b28c91532a8b65a1f983b4c28b7488174e4a01008e29ce8e69bd789f28bc2a89
+```
+
+This is a reproducibility pin, not an automatic "latest" selector. Static
+linking freezes that patch level, so maintainers must review OpenSSL security
+releases and update both the version and digest before rebuilding when needed.
+
+It then builds a private static `libcrypto.a` without shared modules, DSO,
+socket, compression, or jitter-entropy dependencies. This avoids silently using
+a differently configured system `libcrypto.a`. The static bootstrap additionally
+requires `curl`, `sha256sum`, `tar`, and Perl. Static libargon2 and zlib archives
+must still be provided by the system toolchain.
+
+Use `make static-check` to build and run the complete static test suite. The
+download, source, build tree, and installation are cached below `.deps/`; normal
+`make clean` preserves that cache. `make clean-static-deps` removes only the
+managed OpenSSL 3.5.5 cache. To prepare for an offline build, run
+`make fetch-static-deps` on a connected machine and transfer
+`.deps/downloads/openssl-3.5.5.tar.gz` with the source tree before running
+`make static` or `make static-check` on the offline machine.
+
+Advanced builds can bypass the managed OpenSSL build by explicitly setting
+`OPENSSL_LIBS` and supplying matching headers through `CPPFLAGS`; no fallback to
+the system OpenSSL occurs unless that override is requested.
 
 Do not distribute a bare static executable. A binary distribution must include
 the applicable wordlist and dependency notices/license materials, and must meet

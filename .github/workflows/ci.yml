@@ -15,7 +15,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang g++ make libssl-dev libargon2-dev zlib1g-dev
+          sudo apt-get install -y binutils ca-certificates clang curl file g++ make perl \
+            libssl-dev libargon2-dev zlib1g-dev
       - name: GCC build and test
         run: make check
       - name: Sanitizers
@@ -30,8 +31,15 @@ jobs:
       - name: Static build
         run: |
           make clean
-          make STATIC=1 check
+          make static-check
       - name: Verify static executable
         run: |
           file arborkdf-static
           file arborkdf-static | grep -q "statically linked"
+          ! readelf -lW arborkdf-static | grep -q 'INTERP'
+          ! readelf -dW arborkdf-static | grep -q 'NEEDED'
+          printf '%s  %s\n' \
+            'b28c91532a8b65a1f983b4c28b7488174e4a01008e29ce8e69bd789f28bc2a89' \
+            '.deps/downloads/openssl-3.5.5.tar.gz' | sha256sum --check -
+          grep -Eq '^# *define OPENSSL_VERSION_STR "3\.5\.5"$' \
+            .deps/openssl-3.5.5-linux-x86_64-static/include/openssl/opensslv.h
